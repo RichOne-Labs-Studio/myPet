@@ -663,7 +663,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         console.warn('Gagal membaca cache IndexedDB lokal:', err);
       }
 
-      // Ambil data terbaru dari backend Express (berisi cache lengkap yang disinkronkan otomatis dengan Google Sheets)
+      // Ambil data terbaru dari backend Express (atau fallback ke Google Sheets jika di static host seperti GitHub Pages)
       try {
         const backendRes = await fetchDatabaseFromBackend();
         if (isMounted && backendRes.success && backendRes.data) {
@@ -675,9 +675,17 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setSyncStatus('connected');
           const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
           setLastSyncMessage(`Sinkronisasi otomatis backend aktif (${time} WIB)`);
+        } else {
+          // Fallback untuk GitHub Pages / Static Hosting (tanpa backend server Express)
+          if (spreadsheetConfig.webAppUrl && spreadsheetConfig.isConnected) {
+            syncFromSpreadsheet(false);
+          }
         }
       } catch (err) {
-        console.warn('Initial fetch ke backend gagal:', err);
+        console.warn('Initial fetch ke backend gagal, beralih ke direct Spreadsheet:', err);
+        if (spreadsheetConfig.webAppUrl && spreadsheetConfig.isConnected) {
+          syncFromSpreadsheet(false);
+        }
       }
     }
 
@@ -688,11 +696,9 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   // ==========================================
-  // AUTO-SYNC POLLING VIA BACKEND
-  // Sinkronisasi otomatis berjalan di backend Node.js setiap saat.
-  // Frontend hanya memeriksa versi ke backend (~1ms), dan otomatis
-  // memperbarui data jika backend mendeteksi perubahan dari Google Sheets.
+  // AUTO-SYNC POLLING VIA BACKEND & FALLBACK
   // ==========================================
+  const pollCountsRef = useRef<Record<string, number> | null>(null);
   const syncStatusRef = useRef(syncStatus);
   useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
 
@@ -728,39 +734,60 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   useEffect(() => {
     if (typeof document === 'undefined') return;
 
-    const pollBackend = async () => {
+    const poll = async () => {
       if (document.visibilityState !== 'visible') return;
 
       try {
         const status = await fetchStatusFromBackend();
-        if (!status) return;
-
-        if (status.isSyncing) {
-          setSyncStatus('syncing');
-          setLastSyncMessage('Backend sedang melakukan sinkronisasi otomatis dengan Google Sheets...');
-        } else if (status.isConnected) {
-          setSyncStatus('connected');
-        }
-
-        // Jika backend memiliki versi data yang lebih baru (misal ditarik dari Google Sheets atau user lain)
-        if (status.version > localBackendVersionRef.current) {
-          localBackendVersionRef.current = status.version;
-          const backendData = await fetchDatabaseFromBackend();
-          if (backendData.success && backendData.data) {
-            importDatabase(backendData.data);
-            const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
-            setLastSyncMessage(`Sinkronisasi otomatis aktif (${time} WIB)`);
+        if (status) {
+          // Server backend aktif
+          if (status.isSyncing) {
+            setSyncStatus('syncing');
+            setLastSyncMessage('Backend sedang melakukan sinkronisasi otomatis dengan Google Sheets...');
+          } else if (status.isConnected) {
+            setSyncStatus('connected');
           }
+
+          if (status.version > localBackendVersionRef.current) {
+            localBackendVersionRef.current = status.version;
+            const backendData = await fetchDatabaseFromBackend();
+            if (backendData.success && backendData.data) {
+              importDatabase(backendData.data);
+              const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+              setLastSyncMessage(`Sinkronisasi otomatis aktif (${time} WIB)`);
+            }
+          }
+          return;
         }
       } catch {
-        // Abaikan kesalahan polling sesaat
+        // Abaikan
+      }
+
+      // Fallback polling untuk GitHub Pages (Direct Google Apps Script Ping)
+      if (spreadsheetConfig.isConnected && spreadsheetConfig.autoSync && spreadsheetConfig.webAppUrl) {
+        if (syncStatusRef.current === 'syncing') return;
+        try {
+          const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
+          if (ping.success && ping.counts) {
+            const prevCounts = pollCountsRef.current;
+            const rowCountChanged =
+              !prevCounts || Object.keys(ping.counts).some((k) => ping.counts![k] !== prevCounts[k]);
+            pollCountsRef.current = ping.counts;
+
+            if (rowCountChanged) {
+              await syncFromSpreadsheet(true);
+            }
+          }
+        } catch {
+          // Abaikan
+        }
       }
     };
 
-    // Polling backend setiap 5 detik (sangat ringan ~100 bytes)
-    const intervalId = setInterval(pollBackend, 5000);
+    // Polling berkala (5s jika ada backend, atau 30s jika static)
+    const intervalId = setInterval(poll, 10000);
     return () => clearInterval(intervalId);
-  }, []);
+  }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl]);
 
   // Sync with IndexedDB & session storage
   useEffect(() => { saveStored(STORAGE_KEYS.OWNERS, owners); }, [owners]);

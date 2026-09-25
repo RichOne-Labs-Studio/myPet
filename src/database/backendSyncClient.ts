@@ -6,7 +6,12 @@
  * The backend handles real-time background sync with Google Sheets automatically.
  */
 
-import { SpreadsheetDatabaseSchema } from './spreadsheetDb';
+import {
+  SpreadsheetDatabaseSchema,
+  pushSingleRecordToSpreadsheet,
+  pushTableToSpreadsheet,
+  FINAL_SPREADSHEET_URL,
+} from './spreadsheetDb';
 
 export interface BackendSyncStatus {
   isConnected: boolean;
@@ -34,6 +39,11 @@ export async function fetchDatabaseFromBackend(): Promise<{
       return { success: false, message: `Server error: ${res.status}` };
     }
 
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return { success: false, message: 'Static host without backend' };
+    }
+
     const json = await res.json();
     if (json.success && json.data) {
       return {
@@ -56,6 +66,8 @@ export async function fetchStatusFromBackend(): Promise<BackendSyncStatus | null
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return null;
     const json = await res.json();
     return json.success ? json : null;
   } catch {
@@ -75,43 +87,59 @@ export async function triggerBackendSync(): Promise<boolean> {
   }
 }
 
-export async function pushRecordToBackend(table: string, record: any): Promise<boolean> {
+export async function pushRecordToBackend(table: string, record: any, webAppUrl?: string): Promise<boolean> {
   try {
     const res = await fetch('/api/sync/record', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table, record }),
     });
-    return res.ok;
+    if (res.ok) return true;
   } catch {
-    return false;
+    // Fallback direct push
   }
+
+  // Fallback untuk static hosting seperti GitHub Pages tanpa backend server
+  const targetUrl = webAppUrl || FINAL_SPREADSHEET_URL;
+  if (targetUrl) {
+    pushSingleRecordToSpreadsheet(targetUrl, table as any, record).catch(() => {});
+    return true;
+  }
+  return false;
 }
 
-export async function deleteRecordFromBackend(table: string, id: string): Promise<boolean> {
+export async function deleteRecordFromBackend(table: string, id: string, webAppUrl?: string): Promise<boolean> {
   try {
     const res = await fetch('/api/sync/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table, id }),
     });
-    return res.ok;
+    if (res.ok) return true;
   } catch {
-    return false;
+    // Fallback direct push
   }
+  return false;
 }
 
-export async function pushTableToBackend(table: string, records: any[]): Promise<boolean> {
+export async function pushTableToBackend(table: string, records: any[], webAppUrl?: string): Promise<boolean> {
   try {
     const res = await fetch('/api/sync/table', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table, records }),
     });
-    return res.ok;
+    if (res.ok) return true;
   } catch {
-    return false;
+    // Fallback direct push
   }
+
+  const targetUrl = webAppUrl || FINAL_SPREADSHEET_URL;
+  if (targetUrl) {
+    pushTableToSpreadsheet(targetUrl, table as any, records).catch(() => {});
+    return true;
+  }
+  return false;
 }
 
 export async function updateBackendConfig(webAppUrl?: string, autoSync?: boolean): Promise<boolean> {
