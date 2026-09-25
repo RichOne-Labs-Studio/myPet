@@ -172,7 +172,7 @@ export async function testSpreadsheetConnection(webAppUrl: string): Promise<{
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
 
     const res = await fetch(testUrl, {
       method: 'GET',
@@ -247,7 +247,7 @@ export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promis
 
   const attemptFetch = async (): Promise<Response> => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout to allow large 100k+ row transfers
     try {
       return await fetch(fetchUrl, {
         method: 'GET',
@@ -299,12 +299,69 @@ export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promis
     };
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      return { success: false, message: 'Koneksi timeout setelah 2x percobaan (20 detik). Apps Script sedang lambat merespons.' };
+      return { success: false, message: 'Koneksi timeout setelah 2x percobaan (120 detik). Apps Script memerlukan waktu lebih lama karena volume data yang sangat besar.' };
     }
     return {
       success: false,
       message: `Error penarikan data: ${err.message || 'Koneksi terputus'}`,
     };
+  }
+}
+
+/**
+ * Tarik data spesifik satu tabel dengan paging / chunking opsional
+ * Menghindari beban berlebih saat data per sheet mencapai puluhan ribu baris.
+ */
+export async function pullTableFromSpreadsheet(
+  webAppUrl: string,
+  table: keyof SpreadsheetDatabaseSchema,
+  offset: number = 0,
+  limit?: number
+): Promise<{ success: boolean; message: string; data?: any[] }> {
+  if (!webAppUrl || !webAppUrl.trim()) {
+    return { success: false, message: 'URL Google Apps Script belum dikonfigurasi.' };
+  }
+
+  const cleanUrl = webAppUrl.trim();
+  let fetchUrl = cleanUrl.includes('?')
+    ? `${cleanUrl}&action=fetchTable&table=${table}&offset=${offset}&_t=${Date.now()}`
+    : `${cleanUrl}?action=fetchTable&table=${table}&offset=${offset}&_t=${Date.now()}`;
+
+  if (limit) {
+    fetchUrl += `&limit=${limit}`;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    const res = await fetch(fetchUrl, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      return { success: false, message: `Gagal menarik tabel ${table} (HTTP ${res.status})` };
+    }
+
+    const json = await res.json();
+    if (json.status === 'success' && Array.isArray(json.data)) {
+      let records = json.data;
+      if (table === 'pets') {
+        records = records.map((p: any) => ({ ...p, photoUrl: decryptPhotoUrl(p.photoUrl) }));
+      } else if (table === 'queues') {
+        records = records.map((q: any) => ({ ...q, photoUrl: decryptPhotoUrl(q.photoUrl) }));
+      } else if (table === 'soapRecords') {
+        records = records.map((s: any) => ({ ...s, diagnosticAttachments: decryptDiagnosticAttachments(s.diagnosticAttachments) }));
+      }
+      return { success: true, message: `Tabel ${table} berhasil ditarik`, data: records };
+    }
+
+    return { success: false, message: json.message || 'Format tidak sesuai' };
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Gagal koneksi tabel' };
   }
 }
 
@@ -625,6 +682,21 @@ function doGet(e) {
     });
   }
 
+  if (action === 'fetchTable' && e && e.parameter && e.parameter.table) {
+    const table = e.parameter.table;
+    const offset = e.parameter.offset ? parseInt(e.parameter.offset, 10) : 0;
+    const limit = e.parameter.limit ? parseInt(e.parameter.limit, 10) : undefined;
+    const data = readTableData(ss, table, offset, limit);
+
+    return createJsonResponse({
+      status: 'success',
+      table: table,
+      data: data,
+      count: data.length,
+      timestamp: new Date().toISOString()
+    });
+  }
+
   return createJsonResponse({ status: 'error', message: 'Action tidak dikenal' });
 }
 
@@ -702,45 +774,45 @@ function ensureSheetsExist(ss) {
   });
 }
 
-function readTableData(ss, table) {
+function readTableData(ss, table, offset, limit) {
   const sheetName = SHEET_NAMES[table];
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet || sheet.getLastRow() < 2) return [];
 
-  const lastRow = sheet.getLastRow();
+  const totalDataRows = sheet.getLastRow() - 1;
   const lastCol = sheet.getLastColumn();
-  if (lastCol < 1) return [];
+  if (lastCol < 1 || totalDataRows < 1) return [];
+
+  const startRow = 2 + (offset ? Math.max(0, offset) : 0);
+  if (startRow > sheet.getLastRow()) return [];
+
+  const numRows = limit ? Math.min(limit, sheet.getLastRow() - startRow + 1) : sheet.getLastRow() - startRow + 1;
+  if (numRows <= 0) return [];
 
   const headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  const dataRange = sheet.getRange(2, 1, lastRow - 1, lastCol);
+  const dataRange = sheet.getRange(startRow, 1, numRows, lastCol);
   const dataRows = dataRange.getValues();
 
   // Cari kolom 'id' (case-insensitive) supaya baris yang diinput manual
   // di Google Sheets tanpa kolom id bisa diberi ID permanen.
   const idColIdx = headerRow.findIndex(h => String(h).trim().toLowerCase() === 'id');
   const prefix = String(table).slice(0, 3).toLowerCase();
-  let idsWereAssigned = false;
 
   const results = dataRows.map((row, rowIdx) => {
-    // Jangan generate otomatis ID untuk kandang (cages) agar unit kandang tidak terisi otomatis di spreadsheet
+    let idVal = idColIdx !== -1 ? row[idColIdx] : '';
     if (idColIdx !== -1 && table !== 'cages') {
-      const idVal = row[idColIdx];
       const rowHasOtherData = row.some((v, idx) => idx !== idColIdx && v !== '' && v !== null && v !== undefined);
       if (rowHasOtherData && (idVal === '' || idVal === null || idVal === undefined)) {
-        // Tulis ID baru LANGSUNG ke array baris (akan disimpan balik ke sheet di bawah),
-        // supaya stabil selamanya dan tidak berubah-ubah tiap kali di-fetch ulang.
-        row[idColIdx] = prefix + '-' + Date.now() + '-' + rowIdx + '-' + Math.floor(Math.random() * 1000);
-        idsWereAssigned = true;
+        idVal = prefix + '-' + (offset ? offset + rowIdx : rowIdx) + '-' + Math.abs(String(row[0] || '').charCodeAt(0) || 1);
       }
     }
 
     const item = {};
     headerRow.forEach((headerName, idx) => {
       if (!headerName) return;
-      let val = row[idx];
+      let val = idx === idColIdx && idVal ? idVal : row[idx];
       
       // Jika tipe data adalah Date di Google Sheets, konversi ke string berformat lokal spreadsheet-nya
-      // untuk mencegah pergeseran zona waktu saat Apps Script mengonversinya ke JSON / ISO UTC string.
       if (val && (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]')) {
         try {
           val = Utilities.formatDate(val, ss.getSpreadsheetTimeZone(), "yyyy-MM-dd HH:mm:ss");
@@ -756,14 +828,8 @@ function readTableData(ss, table) {
     });
     return item;
   }).filter(item => {
-    // Hanya sertakan baris yang memiliki nilai (bukan baris kosong/terhapus)
     return Object.values(item).some(val => val !== '' && val !== null && val !== undefined);
   });
-
-  // Simpan ID yang baru di-generate balik ke spreadsheet supaya permanen
-  if (idsWereAssigned) {
-    dataRange.setValues(dataRows);
-  }
 
   return results;
 }

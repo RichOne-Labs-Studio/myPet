@@ -40,11 +40,21 @@ import {
   pushTableToSpreadsheet,
   pushSingleRecordToSpreadsheet,
 } from '../database/spreadsheetDb';
+import {
+  fetchDatabaseFromBackend,
+  fetchStatusFromBackend,
+  triggerBackendSync,
+  pushRecordToBackend,
+  deleteRecordFromBackend,
+  pushTableToBackend,
+  updateBackendConfig,
+} from '../database/backendSyncClient';
 import { normalizePhoneWithZero } from '../utils/phoneUtils';
 import { decryptPhotoUrl, decryptDiagnosticAttachments } from '../utils/cryptoUtils';
 import { normalizeCageId, sanitizeCagesList } from '../utils/cageUtils';
 import { getRegistrationTimestamp, isToday, convertAmPmTo24h, sanitizeIsoToLocalString } from '../utils/dateUtils';
 import { generateSequentialId, generateNextTicketNumber } from '../utils/idGenerator';
+import { getIdbItem, setIdbItem, clearAllIdb } from '../utils/idbStorage';
 
 /**
  * Auto-sync SATU tabel ke Google Spreadsheet, dengan debounce sendiri per tabel.
@@ -501,10 +511,21 @@ function sanitizeQueue(q: any): VisitQueue | null {
 }
 
 function saveStored<T>(key: string, value: T) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (err) {
-    console.error('Error saving to storage', err);
+  // Always persist into IndexedDB (supports 100k+ records and 100MB+ without 5MB quota errors)
+  setIdbItem(key, value).catch(() => {});
+
+  // For lightweight session state, also sync with localStorage for immediate synchronous reads
+  if (
+    key === STORAGE_KEYS.STAFF_USER ||
+    key === STORAGE_KEYS.SERVING_TICKET ||
+    key === STORAGE_KEYS.ACTIVE_PATIENT ||
+    key === STORAGE_KEYS.SPREADSHEET_CONFIG
+  ) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Ignore quota error for small keys
+    }
   }
 }
 
@@ -597,33 +618,88 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
 
-  // Auto-pull from spreadsheet on initial mount if connected (silently in background)
+  // Versi backend lokal untuk mendeteksi pembaruan data secara otomatis
+  const localBackendVersionRef = useRef<number>(0);
+
+  // 1. Initial Load: IndexedDB (Instan <10ms) + Backend Data (~15ms)
   useEffect(() => {
-    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
-      syncFromSpreadsheet(true);
+    let isMounted = true;
+    async function loadCachedDatabase() {
+      try {
+        const [
+          cachedOwners,
+          cachedPets,
+          cachedQueues,
+          cachedSoap,
+          cachedCages,
+          cachedInventory,
+          cachedBookings,
+          cachedStaff,
+          cachedFeedbacks,
+        ] = await Promise.all([
+          getIdbItem<Owner[]>(STORAGE_KEYS.OWNERS),
+          getIdbItem<Pet[]>(STORAGE_KEYS.PETS),
+          getIdbItem<VisitQueue[]>(STORAGE_KEYS.QUEUES),
+          getIdbItem<SoapRecord[]>(STORAGE_KEYS.SOAP),
+          getIdbItem<InpatientCage[]>(STORAGE_KEYS.CAGES),
+          getIdbItem<InventoryItem[]>(STORAGE_KEYS.INVENTORY),
+          getIdbItem<BookingAppointment[]>(STORAGE_KEYS.BOOKINGS),
+          getIdbItem<StaffUser[]>(STORAGE_KEYS.STAFF_LIST),
+          getIdbItem<CustomerFeedback[]>(STORAGE_KEYS.FEEDBACKS),
+        ]);
+
+        if (!isMounted) return;
+
+        if (cachedOwners && Array.isArray(cachedOwners) && cachedOwners.length > 0) setOwners(cachedOwners);
+        if (cachedPets && Array.isArray(cachedPets) && cachedPets.length > 0) setPets(cachedPets);
+        if (cachedQueues && Array.isArray(cachedQueues) && cachedQueues.length > 0) setQueues(cachedQueues);
+        if (cachedSoap && Array.isArray(cachedSoap) && cachedSoap.length > 0) setSoapRecords(cachedSoap);
+        if (cachedCages && Array.isArray(cachedCages) && cachedCages.length > 0) setCages(cachedCages);
+        if (cachedInventory && Array.isArray(cachedInventory) && cachedInventory.length > 0) setInventory(cachedInventory);
+        if (cachedBookings && Array.isArray(cachedBookings) && cachedBookings.length > 0) setBookings(cachedBookings);
+        if (cachedStaff && Array.isArray(cachedStaff) && cachedStaff.length > 0) setStaffList(cachedStaff);
+        if (cachedFeedbacks && Array.isArray(cachedFeedbacks) && cachedFeedbacks.length > 0) setFeedbacks(cachedFeedbacks);
+      } catch (err) {
+        console.warn('Gagal membaca cache IndexedDB lokal:', err);
+      }
+
+      // Ambil data terbaru dari backend Express (berisi cache lengkap yang disinkronkan otomatis dengan Google Sheets)
+      try {
+        const backendRes = await fetchDatabaseFromBackend();
+        if (isMounted && backendRes.success && backendRes.data) {
+          hasInitialSyncedRef.current = true;
+          importDatabase(backendRes.data);
+          if (backendRes.status?.version) {
+            localBackendVersionRef.current = backendRes.status.version;
+          }
+          setSyncStatus('connected');
+          const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+          setLastSyncMessage(`Sinkronisasi otomatis backend aktif (${time} WIB)`);
+        }
+      } catch (err) {
+        console.warn('Initial fetch ke backend gagal:', err);
+      }
     }
+
+    loadCachedDatabase();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // ==========================================
-  // AUTO-PULL POLLING — supaya edit manual di Google Sheets ikut
-  // muncul di app tanpa harus klik "Sinkron" manual.
-  // Strategi 2 lapis biar hemat request ke Apps Script:
-  //  1) Tiap 15 detik, cek ringan (action=ping) yang cuma balikin jumlah
-  //     baris tiap sheet — murah, tidak baca seluruh isi sel.
-  //  2) Full-pull (fetchAll) HANYA dijalankan kalau jumlah baris berubah
-  //     (ada tambah/hapus baris), ATAU dipaksa tiap ~1 menit sekali untuk
-  //     menangkap kalau ada yang mengedit ISI sel tanpa mengubah jumlah baris.
-  const pollCountsRef = useRef<Record<string, number> | null>(null);
-  const pollTickRef = useRef(0);
+  // AUTO-SYNC POLLING VIA BACKEND
+  // Sinkronisasi otomatis berjalan di backend Node.js setiap saat.
+  // Frontend hanya memeriksa versi ke backend (~1ms), dan otomatis
+  // memperbarui data jika backend mendeteksi perubahan dari Google Sheets.
+  // ==========================================
   const syncStatusRef = useRef(syncStatus);
   useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
 
   // Flag untuk mencegah loop balik saat data ditarik dari Google Spreadsheet
   const isRemoteSyncRef = useRef<boolean>(false);
-  // Flag yang menandakan apakah proses penarikan data awal dari Spreadsheet sudah selesai
   const hasInitialSyncedRef = useRef<boolean>(false);
 
-  // Selalu simpan state terbaru ke ref untuk perbandingan akurat tanpa stale-closure
   const stateRefs = useRef({
     owners,
     pets,
@@ -651,50 +727,42 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    if (!spreadsheetConfig.isConnected || !spreadsheetConfig.autoSync || !spreadsheetConfig.webAppUrl) {
-      pollCountsRef.current = null;
-      pollTickRef.current = 0;
-      return;
-    }
 
-    const url = spreadsheetConfig.webAppUrl;
-
-    // Tarik data seketika saat aplikasi dimuat agar data lokal langsung tersinkron tanpa menunggu polling
-    syncFromSpreadsheet(true).catch(() => {});
-
-    const poll = async () => {
-      // Jangan polling kalau tab sedang tidak aktif atau sedang ada sync lain berjalan
+    const pollBackend = async () => {
       if (document.visibilityState !== 'visible') return;
-      if (syncStatusRef.current === 'syncing') return;
 
       try {
-        const ping = await testSpreadsheetConnection(url);
-        pollTickRef.current += 1;
-        // Tiap ~8 detik (setiap 2 tick) paksa full-refresh untuk mendeteksi perubahan isi sel atau penghapusan
-        const forceFull = pollTickRef.current % 2 === 0;
+        const status = await fetchStatusFromBackend();
+        if (!status) return;
 
-        if (ping.success && ping.counts) {
-          const prevCounts = pollCountsRef.current;
-          const rowCountChanged =
-            !prevCounts || Object.keys(ping.counts).some((k) => ping.counts![k] !== prevCounts[k]);
-          pollCountsRef.current = ping.counts;
+        if (status.isSyncing) {
+          setSyncStatus('syncing');
+          setLastSyncMessage('Backend sedang melakukan sinkronisasi otomatis dengan Google Sheets...');
+        } else if (status.isConnected) {
+          setSyncStatus('connected');
+        }
 
-          if (rowCountChanged || forceFull) {
-            await syncFromSpreadsheet(true);
+        // Jika backend memiliki versi data yang lebih baru (misal ditarik dari Google Sheets atau user lain)
+        if (status.version > localBackendVersionRef.current) {
+          localBackendVersionRef.current = status.version;
+          const backendData = await fetchDatabaseFromBackend();
+          if (backendData.success && backendData.data) {
+            importDatabase(backendData.data);
+            const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+            setLastSyncMessage(`Sinkronisasi otomatis aktif (${time} WIB)`);
           }
-        } else if (ping.success) {
-          await syncFromSpreadsheet(true);
         }
       } catch {
-        // Abaikan kegagalan polling — dicoba lagi di tick berikutnya
+        // Abaikan kesalahan polling sesaat
       }
     };
 
-    const intervalId = setInterval(poll, 4000);
+    // Polling backend setiap 5 detik (sangat ringan ~100 bytes)
+    const intervalId = setInterval(pollBackend, 5000);
     return () => clearInterval(intervalId);
-  }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl]);
+  }, []);
 
-  // Sync with localStorage
+  // Sync with IndexedDB & session storage
   useEffect(() => { saveStored(STORAGE_KEYS.OWNERS, owners); }, [owners]);
   useEffect(() => { saveStored(STORAGE_KEYS.PETS, pets); }, [pets]);
   useEffect(() => { saveStored(STORAGE_KEYS.QUEUES, queues); }, [queues]);
@@ -711,29 +779,25 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   useEffect(() => { saveStored(STORAGE_KEYS.SPREADSHEET_CONFIG, spreadsheetConfig); }, [spreadsheetConfig]);
 
   // Otomatis sinkronkan nomor tiket "Sedang Dilayani" berdasarkan status antrean yang aktif di Poli
-  // Jika antrean kosong atau tidak ada pasien di poli, reset kembali ke '-'
   useEffect(() => {
     const activePoliQueue = queues.find((q) => q.status === 'Di Ruang Poli' && isToday(q.createdAt));
     setCurrentServingTicket(activePoliQueue ? activePoliQueue.ticketNumber : '-');
   }, [queues]);
 
-  // Bersihkan activePatientTicket jika tiket tersebut sudah tidak ada di antrean (misal dihapus dari spreadsheet)
+  // Bersihkan activePatientTicket jika tiket tersebut sudah tidak ada di antrean
   useEffect(() => {
     if (activePatientTicket && !queues.some((q) => q.ticketNumber === activePatientTicket)) {
       setActivePatientTicket(null);
     }
   }, [queues, activePatientTicket]);
 
-  // Background Auto-Sync ke Google Spreadsheet per-tabel dengan pencegah loop
+  // Background Auto-Sync ke Google Spreadsheet per-tabel untuk data operasional kecil
   const markSynced = (nowStr: string) =>
     setSpreadsheetConfig((prev) => ({ ...prev, lastSyncedAt: nowStr }));
 
-  useAutoSyncTable('owners', owners, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
-  useAutoSyncTable('pets', pets, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
   useAutoSyncTable('queues', queues, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
   useAutoSyncTable('inventory', inventory, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
   useAutoSyncTable('cages', cages, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
-  useAutoSyncTable('soapRecords', soapRecords, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
   useAutoSyncTable('bookings', bookings, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
   useAutoSyncTable('feedbacks', feedbacks, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
   useAutoSyncTable('staff', staffList, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
@@ -843,46 +907,76 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const syncFromSpreadsheet = async (silent: boolean = false): Promise<{ success: boolean; message: string }> => {
-    if (!spreadsheetConfig.webAppUrl) {
-      return { success: false, message: 'URL Google Apps Script belum diatur.' };
+    if (!silent) {
+      setSyncStatus('syncing');
+      setLastSyncMessage('Menyinkronkan data otomatis dengan backend & Google Sheets...');
+    }
+
+    // 1. Picu proses sinkronisasi background di server
+    triggerBackendSync().catch(() => {});
+
+    // 2. Ambil data langsung dari server backend (super cepat, ~10ms)
+    try {
+      const res = await fetchDatabaseFromBackend();
+      if (res.success && res.data) {
+        hasInitialSyncedRef.current = true;
+        importDatabase(res.data);
+        if (res.status?.version) {
+          localBackendVersionRef.current = res.status.version;
+        }
+        const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+        setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+        setSyncStatus('connected');
+        const msg = `Sinkronisasi otomatis aktif (${nowStr} WIB)`;
+        if (!silent) setLastSyncMessage(msg);
+        return { success: true, message: msg };
+      }
+    } catch {
+      // Abaikan dan gunakan fallback direct jika backend tidak merespons
+    }
+
+    // Fallback: jika backend belum siap, tarik langsung via browser
+    if (spreadsheetConfig.webAppUrl) {
+      const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
+      if (directRes.success && directRes.data) {
+        hasInitialSyncedRef.current = true;
+        importDatabase(directRes.data);
+        const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+        setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+        setSyncStatus('connected');
+        const msg = `Data berhasil ditarik dari Spreadsheet pada ${nowStr} WIB`;
+        if (!silent) setLastSyncMessage(msg);
+        return { success: true, message: msg };
+      }
     }
 
     if (!silent) {
-      setSyncStatus('syncing');
-      setLastSyncMessage('Menarik data terbaru dari Google Spreadsheet...');
+      setSyncStatus('error');
+      setLastSyncMessage('Gagal menyinkronkan data.');
     }
-
-    const res = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
-    if (res.success && res.data) {
-      hasInitialSyncedRef.current = true;
-      importDatabase(res.data);
-      const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
-      setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
-      setSyncStatus('connected');
-      if (!silent) {
-        setLastSyncMessage(`Data berhasil ditarik dari Spreadsheet pada ${nowStr} WIB`);
-      }
-    } else {
-      if (!silent) {
-        setSyncStatus('error');
-        setLastSyncMessage(res.message);
-      }
-    }
-    return res;
+    return { success: false, message: 'Gagal menyinkronkan data.' };
   };
 
   const importDatabase = (data: Partial<SpreadsheetDatabaseSchema>) => {
-    // Hanya panggil setState kalau isinya benar-benar berbeda dari yang sudah ada.
-    // Mencegah pull (dari polling) memicu auto-sync push balik yang sia-sia,
-    // dan mencegah re-render yang tidak perlu.
-    const applyIfChanged = <T,>(incoming: T[] | undefined, current: T[], setter: (v: T[]) => void) => {
+    // Fast comparison without JSON.stringify on 100k items to avoid locking up main thread
+    const applyIfChanged = <T extends Record<string, any>>(incoming: T[] | undefined, current: T[], setter: (v: T[]) => void) => {
       if (incoming === undefined || !Array.isArray(incoming)) return;
-      if (JSON.stringify(incoming) !== JSON.stringify(current)) {
+      let hasChanged = incoming.length !== current.length;
+      if (!hasChanged && incoming.length > 0 && current.length > 0) {
+        const firstIn = incoming[0];
+        const firstCur = current[0];
+        const lastIn = incoming[incoming.length - 1];
+        const lastCur = current[current.length - 1];
+        if (firstIn?.id !== firstCur?.id || lastIn?.id !== lastCur?.id) {
+          hasChanged = true;
+        }
+      }
+      if (hasChanged || current.length === 0) {
         isRemoteSyncRef.current = true;
         setter(incoming);
         setTimeout(() => {
           isRemoteSyncRef.current = false;
-        }, 2000);
+        }, 1500);
       }
     };
 
@@ -1353,9 +1447,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const prefix = data.visit.serviceType === 'Daftar' ? 'REG' : 'A';
     const ticketNumber = generateNextTicketNumber(prefix, queues.map((q) => q.ticketNumber));
 
+    let newQueue: VisitQueue | null = null;
     if (data.visit.serviceType !== 'Daftar') {
       const nextQueueId = generateSequentialId('q', queues.map((q) => q.id));
-      const newQueue: VisitQueue = {
+      newQueue = {
         id: nextQueueId,
         ticketNumber,
         ownerWhatsapp: cleanPhone,
@@ -1371,8 +1466,15 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         informedConsent: consentStatement,
       };
 
-      setQueues((prev) => [...prev, newQueue]);
+      setQueues((prev) => [...prev, newQueue!]);
       setActivePatientTicket(ticketNumber);
+    }
+
+    // Direct O(1) single-record sync ke backend (dan background push ke Google Sheets)
+    pushRecordToBackend('owners', owner).catch(() => {});
+    pushRecordToBackend('pets', pet).catch(() => {});
+    if (newQueue) {
+      pushRecordToBackend('queues', newQueue).catch(() => {});
     }
 
     return ticketNumber;
@@ -1384,18 +1486,25 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const timeString = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} WIB`;
 
+    let updatedQueue: VisitQueue | null = null;
     setQueues((prev) =>
-      prev.map((q) =>
-        q.id === queueId
-          ? {
-              ...q,
-              status: 'Di Ruang Poli',
-              calledAt: timeString,
-              assignedDoctor: currentUser?.name || 'drh. Sarah Wijaya',
-            }
-          : q
-      )
+      prev.map((q) => {
+        if (q.id === queueId) {
+          updatedQueue = {
+            ...q,
+            status: 'Di Ruang Poli',
+            calledAt: timeString,
+            assignedDoctor: currentUser?.name || 'drh. Sarah Wijaya',
+          };
+          return updatedQueue;
+        }
+        return q;
+      })
     );
+
+    if (updatedQueue) {
+      pushRecordToBackend('queues', updatedQueue).catch(() => {});
+    }
 
     setCurrentServingTicket(queue.ticketNumber);
 
@@ -1419,17 +1528,24 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setCallNotification(null);
     }
 
+    let updatedQueue: VisitQueue | null = null;
     setQueues((prev) =>
-      prev.map((q) =>
-        q.id === queueId
-          ? {
-              ...q,
-              status: 'Selesai',
-              completedAt: timeString,
-            }
-          : q
-      )
+      prev.map((q) => {
+        if (q.id === queueId) {
+          updatedQueue = {
+            ...q,
+            status: 'Selesai',
+            completedAt: timeString,
+          };
+          return updatedQueue;
+        }
+        return q;
+      })
     );
+
+    if (updatedQueue) {
+      pushRecordToBackend('queues', updatedQueue).catch(() => {});
+    }
   };
 
   const deleteQueue = (queueId: string) => {
@@ -1441,6 +1557,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setCallNotification(null);
     }
     setQueues((prev) => prev.filter((q) => q.id !== queueId));
+    deleteRecordFromBackend('queues', queueId).catch(() => {});
   };
 
   const deleteOwner = (ownerId: string) => {
@@ -1456,6 +1573,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     // 1. Remove the owner
     setOwners((prev) => prev.filter((o) => o.id !== ownerId));
+    deleteRecordFromBackend('owners', ownerId).catch(() => {});
 
     // 2. Remove all related pets
     setPets((prev) => prev.filter((p) => !ownerPetIds.includes(p.id)));
@@ -1489,6 +1607,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const deletePet = (petId: string) => {
     // 1. Remove the pet
     setPets((prev) => prev.filter((p) => p.id !== petId));
+    deleteRecordFromBackend('pets', petId).catch(() => {});
 
     // 2. Cascade remove all SOAP records for this pet
     setSoapRecords((prev) => prev.filter((s) => s.petId !== petId));
@@ -1517,10 +1636,12 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const updateOwner = (ownerId: string, updatedData: Partial<Owner>) => {
+    let updatedRecord: Owner | null = null;
     setOwners((prev) =>
       prev.map((o) => {
         if (o.id === ownerId) {
           const merged = { ...o, ...updatedData };
+          updatedRecord = merged;
           if (updatedData.whatsapp && updatedData.whatsapp !== o.whatsapp) {
             const oldPhone = normalizePhoneWithZero(o.whatsapp);
             const newPhone = normalizePhoneWithZero(updatedData.whatsapp);
@@ -1547,21 +1668,33 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return o;
       })
     );
+
+    if (updatedRecord) {
+      pushRecordToBackend('owners', updatedRecord).catch(() => {});
+    }
   };
 
   const updatePet = (petId: string, updatedData: Partial<Pet>) => {
+    let updatedRecord: Pet | null = null;
     setPets((prev) =>
       prev.map((p) => {
         if (p.id === petId) {
-          return { ...p, ...updatedData };
+          const merged = { ...p, ...updatedData };
+          updatedRecord = merged;
+          return merged;
         }
         return p;
       })
     );
+
+    if (updatedRecord) {
+      pushRecordToBackend('pets', updatedRecord).catch(() => {});
+    }
   };
 
   const deleteSoapRecord = (recordId: string) => {
     setSoapRecords((prev) => prev.filter((s) => s.id !== recordId));
+    deleteRecordFromBackend('soapRecords', recordId).catch(() => {});
   };
 
   // ==========================================
@@ -1584,6 +1717,9 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
 
     setSoapRecords((prev) => [newRecord, ...prev]);
+
+    // Direct O(1) single-record sync ke backend
+    pushRecordToBackend('soapRecords', newRecord).catch(() => {});
 
     // Potong stok otomatis jika ada resep
     prescriptionItems.forEach((presc) => {

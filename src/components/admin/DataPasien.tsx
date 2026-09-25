@@ -53,6 +53,15 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
   } = useClinic();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const [selectedSpecies, setSelectedSpecies] = useState<'all' | PetType>('all');
   const [selectedStatus, setSelectedStatus] = useState<'all' | Pet['status']>('all');
   const [expandedPetId, setExpandedPetId] = useState<string | null>(null);
@@ -190,8 +199,8 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
   };
 
   const filteredPets = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    const cleanDigits = searchQuery.replace(/\D/g, '');
+    const q = debouncedSearch.toLowerCase().trim();
+    const cleanDigits = debouncedSearch.replace(/\D/g, '');
 
     return pets.filter((pet) => {
       const owner = getOwnerForPet(pet);
@@ -219,7 +228,7 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
 
       return matchesSearch && matchesSpecies && matchesStatus;
     });
-  }, [pets, searchQuery, selectedSpecies, selectedStatus, ownerMap, queues, soapRecords]);
+  }, [pets, debouncedSearch, selectedSpecies, selectedStatus, ownerMap, queues, soapRecords]);
 
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;

@@ -49,6 +49,7 @@ export const AdminLayout: React.FC<Props> = ({ currentRoute, navigate, children 
     resetToInitialData,
     syncStatus,
     syncFromSpreadsheet,
+    lastSyncMessage,
   } = useClinic();
 
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -286,17 +287,32 @@ export const AdminLayout: React.FC<Props> = ({ currentRoute, navigate, children 
               <span className="font-mono font-bold text-fuchsia-700">{occupiedCagesCount} / {cages.length}</span>
             </div>
 
-            {/* Automatic Live Sync Badge */}
+            {/* Automatic Backend Live Sync Indicator Badge */}
             <div
-              className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold bg-fuchsia-50/90 text-fuchsia-900 border border-fuchsia-200/80 shadow-2xs"
-              title="Sinkronisasi otomatis dengan Google Spreadsheet aktif secara real-time"
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-2xs border select-none ${
+                syncStatus === 'syncing'
+                  ? 'bg-amber-50 text-amber-900 border-amber-200'
+                  : 'bg-fuchsia-50/90 text-fuchsia-900 border-fuchsia-200/80'
+              }`}
+              title={
+                lastSyncMessage ||
+                'Sinkronisasi otomatis berjalan di backend Node.js setiap saat tanpa perlu klik manual.'
+              }
             >
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-fuchsia-600"></span>
+              {syncStatus === 'syncing' ? (
+                <RefreshCw className="w-3.5 h-3.5 text-amber-700 animate-spin" />
+              ) : (
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+              )}
+              <span className="hidden sm:inline">
+                {syncStatus === 'syncing' ? 'Menyinkronkan Backend...' : 'Sinkron Otomatis (Backend)'}
               </span>
-              <span className="hidden sm:inline">Sinkron Otomatis Live</span>
-              <span className="sm:hidden font-mono text-[10px]">Auto</span>
+              <span className="sm:hidden font-mono text-[10px]">
+                {syncStatus === 'syncing' ? 'Sync...' : 'Auto-Sync'}
+              </span>
             </div>
           </div>
         </header>

@@ -90,6 +90,15 @@ export const RekamMedis: React.FC<Props> = ({
 
   // Search & Filter for SOAP List
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const [selectedDoctorFilter, setSelectedDoctorFilter] = useState<string>('all');
   const [hasDiagnosticFilter, setHasDiagnosticFilter] = useState<boolean>(false);
   const [hasPrescriptionFilter, setHasPrescriptionFilter] = useState<boolean>(false);
@@ -239,7 +248,7 @@ export const RekamMedis: React.FC<Props> = ({
 
   // Filtered SOAP records for list view
   const filteredSoapRecords = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = debouncedSearch.toLowerCase().trim();
     return soapRecords.filter((record) => {
       const matchSearch =
         !q ||
@@ -267,7 +276,7 @@ export const RekamMedis: React.FC<Props> = ({
     });
   }, [
     soapRecords,
-    searchQuery,
+    debouncedSearch,
     selectedDoctorFilter,
     hasDiagnosticFilter,
     hasPrescriptionFilter,

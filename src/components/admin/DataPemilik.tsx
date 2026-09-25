@@ -42,6 +42,15 @@ export const DataPemilik: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =
   } = useClinic();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const [expandedOwnerId, setExpandedOwnerId] = useState<string | null>(null);
   const [ownerToDelete, setOwnerToDelete] = useState<Owner | null>(null);
   const [petToDelete, setPetToDelete] = useState<Pet | null>(null);
@@ -80,7 +89,7 @@ export const DataPemilik: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =
   const [newPetComplaint, setNewPetComplaint] = useState('');
 
   const filteredOwners = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = debouncedSearch.toLowerCase().trim();
     if (!q) return owners;
     return owners.filter((o) => {
       const nameMatch = String(o.name || '').toLowerCase().includes(q);
@@ -97,7 +106,7 @@ export const DataPemilik: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =
         String(p.breed || '').toLowerCase().includes(q)
       );
     });
-  }, [owners, searchQuery, pets, getPetsByOwnerPhone]);
+  }, [owners, debouncedSearch, pets, getPetsByOwnerPhone]);
 
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
