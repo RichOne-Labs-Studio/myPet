@@ -21,6 +21,7 @@ import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
 import { Owner, Pet, PetType } from '../../types';
 import { formatDateTimeDisplay } from '../../utils/dateUtils';
+import { normalizePhoneWithZero } from '../../utils/phoneUtils';
 import { getPetEmoji, getPetTypeIndonesian, getPetTypeLabelWithEmoji } from '../../utils/petUtils';
 
 interface Props {
@@ -88,6 +89,48 @@ export const DataPemilik: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =
   const [newPetSex, setNewPetSex] = useState<'Jantan' | 'Betina'>('Jantan');
   const [newPetComplaint, setNewPetComplaint] = useState('');
 
+  // Fast O(1) pets lookup by owner ID and phone
+  const petsByOwnerMap = useMemo(() => {
+    const map = new Map<string, Pet[]>();
+    pets.forEach((p) => {
+      if (p.ownerId) {
+        const list = map.get(`id:${p.ownerId}`) || [];
+        list.push(p);
+        map.set(`id:${p.ownerId}`, list);
+      }
+      if (p.ownerWhatsapp) {
+        const normWp = normalizePhoneWithZero(p.ownerWhatsapp);
+        if (normWp) {
+          const list = map.get(`norm:${normWp}`) || [];
+          list.push(p);
+          map.set(`norm:${normWp}`, list);
+        }
+        const digits = String(p.ownerWhatsapp).replace(/\D/g, '');
+        if (digits) {
+          const list = map.get(`digits:${digits}`) || [];
+          list.push(p);
+          map.set(`digits:${digits}`, list);
+        }
+      }
+    });
+    return map;
+  }, [pets]);
+
+  const getOwnerPetsFast = (whatsapp: string | number, ownerId?: string): Pet[] => {
+    if (ownerId && petsByOwnerMap.has(`id:${ownerId}`)) {
+      return petsByOwnerMap.get(`id:${ownerId}`)!;
+    }
+    const norm = normalizePhoneWithZero(whatsapp);
+    if (norm && petsByOwnerMap.has(`norm:${norm}`)) {
+      return petsByOwnerMap.get(`norm:${norm}`)!;
+    }
+    const digits = String(whatsapp ?? '').replace(/\D/g, '');
+    if (digits && petsByOwnerMap.has(`digits:${digits}`)) {
+      return petsByOwnerMap.get(`digits:${digits}`)!;
+    }
+    return getPetsByOwnerPhone(whatsapp, ownerId);
+  };
+
   const filteredOwners = useMemo(() => {
     const q = debouncedSearch.toLowerCase().trim();
     if (!q) return owners;
@@ -98,15 +141,15 @@ export const DataPemilik: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =
       const idMatch = String(o.id || '').toLowerCase().includes(q);
       if (nameMatch || waMatch || addrMatch || idMatch) return true;
 
-      // Juga cocok jika pemilik ini memiliki hewan dengan nama/ID yang dicari
-      const ownerPets = getPetsByOwnerPhone(o.whatsapp, o.id);
+      // Fast O(1) pet check
+      const ownerPets = getOwnerPetsFast(o.whatsapp, o.id);
       return ownerPets.some((p) =>
         String(p.name || '').toLowerCase().includes(q) ||
         String(p.id || '').toLowerCase().includes(q) ||
         String(p.breed || '').toLowerCase().includes(q)
       );
     });
-  }, [owners, debouncedSearch, pets, getPetsByOwnerPhone]);
+  }, [owners, debouncedSearch, petsByOwnerMap]);
 
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
@@ -209,7 +252,7 @@ export const DataPemilik: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =
               ) : (
                 paginatedOwners.map((owner) => {
                   const ownerPhoneStr = String(owner.whatsapp ?? '');
-                  const ownerPets = getPetsByOwnerPhone(ownerPhoneStr, owner.id);
+                  const ownerPets = getOwnerPetsFast(ownerPhoneStr, owner.id);
                   const isExpanded = expandedOwnerId === owner.id;
 
                   return (
