@@ -1,0 +1,6 @@
+{
+  "name": "Vier Pet Care",
+  "description": "Vier Pet Care - Sistem Manajemen Klinik Hewan Terpadu, Jl. Kalitanjung No. 72 Kota Cirebon.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

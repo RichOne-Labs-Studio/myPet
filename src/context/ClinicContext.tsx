@@ -1,0 +1,2086 @@
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import {
+  Owner,
+  Pet,
+  VisitQueue,
+  SoapRecord,
+  InpatientCage,
+  InpatientHistoryRecord,
+  InventoryItem,
+  BookingAppointment,
+  StaffUser,
+  StaffRole,
+  CustomerFeedback,
+  PrescriptionItem,
+  DiagnosticAttachment,
+  InpatientObservation,
+  PetType,
+  ServiceType,
+  CageStatus,
+  SpreadsheetConfig,
+  SyncStatus
+} from '../types';
+import {
+  INITIAL_STAFF,
+  INITIAL_OWNERS,
+  INITIAL_PETS,
+  INITIAL_QUEUES,
+  INITIAL_INVENTORY,
+  INITIAL_SOAP_RECORDS,
+  INITIAL_CAGES,
+  INITIAL_BOOKINGS,
+  INITIAL_FEEDBACKS,
+} from '../mockData';
+import {
+  DEFAULT_SPREADSHEET_CONFIG,
+  SpreadsheetDatabaseSchema,
+  testSpreadsheetConnection,
+  pullFullDatabaseFromSpreadsheet,
+  pushFullDatabaseToSpreadsheet,
+  pushTableToSpreadsheet,
+  pushSingleRecordToSpreadsheet,
+} from '../database/spreadsheetDb';
+import { normalizePhoneWithZero } from '../utils/phoneUtils';
+import { decryptPhotoUrl, decryptDiagnosticAttachments } from '../utils/cryptoUtils';
+import { normalizeCageId, sanitizeCagesList } from '../utils/cageUtils';
+import { getRegistrationTimestamp, isToday, convertAmPmTo24h, sanitizeIsoToLocalString } from '../utils/dateUtils';
+import { generateSequentialId, generateNextTicketNumber } from '../utils/idGenerator';
+
+/**
+ * Auto-sync SATU tabel ke Google Spreadsheet, dengan debounce sendiri per tabel.
+ * Menghindari echo-loop saat data baru ditarik dari Google Sheets menggunakan isRemoteSyncRef.
+ */
+function useAutoSyncTable<T>(
+  table: keyof SpreadsheetDatabaseSchema,
+  value: T[],
+  config: SpreadsheetConfig,
+  setSyncStatus: React.Dispatch<React.SetStateAction<SyncStatus>>,
+  setLastSyncMessage: React.Dispatch<React.SetStateAction<string | null>>,
+  markSynced: (nowStr: string) => void,
+  isRemoteSyncRef: React.MutableRefObject<boolean>,
+  hasInitialSyncedRef: React.MutableRefObject<boolean>
+) {
+  const firstRun = useRef(true);
+  const prevSerializedRef = useRef<string>(JSON.stringify(value));
+  const debounceRef = useRef<any>(null);
+
+  useEffect(() => {
+    const serialized = JSON.stringify(value);
+
+    // Pada pendorongan pertama, simpan snapshot dan lewati
+    if (firstRun.current) {
+      firstRun.current = false;
+      prevSerializedRef.current = serialized;
+      return;
+    }
+
+    if (!config.isConnected || !config.autoSync || !config.webAppUrl) {
+      prevSerializedRef.current = serialized;
+      return;
+    }
+
+    // Jangan push ke spreadsheet jika proses penarikan data awal saat booting belum selesai
+    if (!hasInitialSyncedRef.current) {
+      prevSerializedRef.current = serialized;
+      return;
+    }
+
+    // Jika data baru saja ditarik dari Google Spreadsheet, perbarui snapshot dan jangan push
+    if (isRemoteSyncRef.current) {
+      prevSerializedRef.current = serialized;
+      return;
+    }
+
+    // Safeguard penting: Jangan auto-push array kosong untuk tabel vital klinik agar tidak menimpa sheet dengan kosong
+    if (Array.isArray(value) && value.length === 0 && (table === 'owners' || table === 'pets' || table === 'cages' || table === 'staff' || table === 'soapRecords')) {
+      prevSerializedRef.current = serialized;
+      return;
+    }
+
+    // Jika isi data lokal tidak berubah sama sekali, jangan push ke Spreadsheet
+    if (serialized === prevSerializedRef.current) {
+      return;
+    }
+
+    prevSerializedRef.current = serialized;
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      if (isRemoteSyncRef.current) return;
+      try {
+        setSyncStatus('syncing');
+        const res = await pushTableToSpreadsheet(config.webAppUrl, table, value);
+        if (res.success) {
+          const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+          markSynced(nowStr);
+          setSyncStatus('connected');
+          setLastSyncMessage(`Tabel "${table}" tersimpan di Spreadsheet (${nowStr} WIB)`);
+        } else {
+          setSyncStatus('error');
+          setLastSyncMessage(res.message);
+        }
+      } catch (err: any) {
+        setSyncStatus('error');
+        setLastSyncMessage(err.message || 'Auto-sync gagal');
+      }
+    }, 1500);
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, config.isConnected, config.autoSync, config.webAppUrl]);
+}
+
+interface RegisterData {
+  owner: {
+    name: string;
+    whatsapp: string;
+    address: string;
+  };
+  pet: {
+    name: string;
+    type: PetType;
+    breed: string;
+    ageOrDob: string;
+    sex: 'Jantan' | 'Betina';
+    photoUrl?: string;
+  };
+  visit: {
+    chiefComplaint: string;
+    serviceType: ServiceType;
+  };
+  informedConsent?: string;
+}
+
+interface CallNotification {
+  ticketNumber: string;
+  petName: string;
+  ownerName: string;
+  room: string;
+  timestamp: string;
+}
+
+interface ClinicContextType {
+  owners: Owner[];
+  pets: Pet[];
+  queues: VisitQueue[];
+  inventory: InventoryItem[];
+  cages: InpatientCage[];
+  inpatientHistory: InpatientHistoryRecord[];
+  soapRecords: SoapRecord[];
+  bookings: BookingAppointment[];
+  feedbacks: CustomerFeedback[];
+  staffList: StaffUser[];
+  currentUser: StaffUser | null;
+  currentServingTicket: string;
+  activePatientTicket: string | null;
+  callNotification: CallNotification | null;
+
+  // Spreadsheet Database Connection & Sync
+  spreadsheetConfig: SpreadsheetConfig;
+  syncStatus: SyncStatus;
+  lastSyncMessage: string | null;
+  connectSpreadsheet: (url: string) => Promise<{ success: boolean; message: string }>;
+  disconnectSpreadsheet: () => void;
+  updateSpreadsheetConfig: (partial: Partial<SpreadsheetConfig>) => void;
+  syncToSpreadsheet: (customDb?: SpreadsheetDatabaseSchema) => Promise<{ success: boolean; message: string }>;
+  syncFromSpreadsheet: (silent?: boolean) => Promise<{ success: boolean; message: string }>;
+  importDatabase: (data: Partial<SpreadsheetDatabaseSchema>) => void;
+  clearAllData: () => void;
+
+  // Patient & Clinical Actions
+  registerPatient: (data: RegisterData) => string;
+  callQueue: (queueId: string, room?: string) => void;
+  completeQueue: (queueId: string) => void;
+  deleteQueue: (queueId: string) => void;
+  deleteOwner: (ownerId: string) => void;
+  deletePet: (petId: string) => void;
+  deleteSoapRecord: (recordId: string) => void;
+  saveSoapRecord: (
+    record: Omit<SoapRecord, 'id' | 'date'>,
+    prescriptionItems: PrescriptionItem[]
+  ) => void;
+  updateCageStatus: (cageId: string, status: CageStatus, petId?: string) => void;
+  addCageObservation: (cageId: string, obs: Omit<InpatientObservation, 'id'>) => void;
+  admitPetToCage: (cageId: string, pet: Pet, owner: Owner, diagnosis: string, vet: string) => void;
+  dischargeCage: (cageId: string) => void;
+  restockItem: (itemId: string, addedQuantity: number) => void;
+  addInventoryItem: (item: Omit<InventoryItem, 'id' | 'lastRestocked'>) => void;
+  addBooking: (booking: Omit<BookingAppointment, 'id'>) => void;
+  updateBookingStatus: (id: string, status: BookingAppointment['status']) => void;
+  addFeedback: (feedback: Omit<CustomerFeedback, 'id' | 'submittedAt'>) => void;
+  deleteFeedback: (id: string) => void;
+  addStaff: (staff: Omit<StaffUser, 'id'>) => { success: boolean; message: string };
+  deleteStaff: (id: string) => { success: boolean; message: string };
+  updateStaffPassword: (id: string, newPassword: string) => { success: boolean; message: string };
+  loginStaff: (username: string, password: string) => { success: boolean; message: string };
+  logoutStaff: () => void;
+  setTrackedTicket: (ticket: string) => boolean;
+  trackByPhone: (phone: string) => boolean;
+  clearPatientSession: () => void;
+  dismissCallNotification: () => void;
+  getPetById: (id: string) => Pet | undefined;
+  getOwnerByPhone: (phone: string) => Owner | undefined;
+  getPetsByOwnerPhone: (phone: string | number, ownerId?: string) => Pet[];
+  resetToInitialData: () => void;
+  updateOwner: (ownerId: string, updatedData: Partial<Owner>) => void;
+  updatePet: (petId: string, updatedData: Partial<Pet>) => void;
+  sanitizeAllExistingDates: () => SpreadsheetDatabaseSchema;
+}
+
+const ClinicContext = createContext<ClinicContextType | undefined>(undefined);
+
+const DB_VERSION_KEY = 'vetcare_clean_db_v2';
+
+const STORAGE_KEYS = {
+  OWNERS: 'vetcare_owners',
+  PETS: 'vetcare_pets',
+  QUEUES: 'vetcare_queues',
+  INVENTORY: 'vetcare_inventory',
+  CAGES: 'vetcare_cages',
+  INPATIENT_HISTORY: 'vetcare_inpatient_history',
+  SOAP: 'vetcare_soap',
+  BOOKINGS: 'vetcare_bookings',
+  FEEDBACKS: 'vetcare_feedbacks',
+  STAFF_LIST: 'vetcare_staff_list',
+  STAFF_USER: 'vetcare_current_staff',
+  SERVING_TICKET: 'vetcare_serving_ticket',
+  ACTIVE_PATIENT: 'vetcare_active_patient_ticket',
+  SPREADSHEET_CONFIG: 'vetcare_spreadsheet_config',
+};
+
+// Purge any legacy dummy data once on version bump
+if (typeof window !== 'undefined') {
+  try {
+    const currentVer = localStorage.getItem(DB_VERSION_KEY);
+    if (currentVer !== 'v2') {
+      localStorage.removeItem(STORAGE_KEYS.OWNERS);
+      localStorage.removeItem(STORAGE_KEYS.PETS);
+      localStorage.removeItem(STORAGE_KEYS.QUEUES);
+      localStorage.removeItem(STORAGE_KEYS.INVENTORY);
+      localStorage.removeItem(STORAGE_KEYS.CAGES);
+      localStorage.removeItem(STORAGE_KEYS.SOAP);
+      localStorage.removeItem(STORAGE_KEYS.BOOKINGS);
+      localStorage.removeItem(STORAGE_KEYS.FEEDBACKS);
+      localStorage.removeItem(STORAGE_KEYS.SERVING_TICKET);
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_PATIENT);
+      localStorage.setItem(DB_VERSION_KEY, 'v2');
+    }
+  } catch {
+    // Ignore storage check failures
+  }
+}
+
+function loadStored<T>(key: string, fallback: T): T {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Menghasilkan ID deterministik (stabil) dari kombinasi field yang ada di baris data.
+ * Dipakai sebagai fallback saat kolom 'id' kosong di Google Sheets (mis. data diketik manual),
+ * supaya ID tidak berubah-ubah setiap kali data ditarik ulang (Date.now() akan selalu beda tiap fetch).
+ */
+function stableIdFrom(prefix: string, parts: Array<string | number | undefined | null>): string {
+  const seed = parts.map((p) => String(p ?? '').trim().toLowerCase()).join('|');
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  return `${prefix}-${Math.abs(hash).toString(36)}`;
+}
+
+function sanitizeOwner(o: any): Owner | null {
+  if (!o || typeof o !== 'object') return null;
+  const id = String(o?.id || o?.ID || o?.Id || o?.['ID Pemilik'] || o?.['Kode Pemilik'] || '').trim();
+  const name = String(
+    o?.name ||
+      o?.nama ||
+      o?.Nama ||
+      o?.['Nama Pemilik'] ||
+      o?.['Nama Lengkap'] ||
+      o?.['Nama Owner'] ||
+      o?.pemilik ||
+      o?.owner ||
+      ''
+  ).trim();
+  const rawWa =
+    o?.whatsapp ||
+    o?.WhatsApp ||
+    o?.['No WA'] ||
+    o?.['No. WA'] ||
+    o?.['No WhatsApp'] ||
+    o?.['No. WhatsApp'] ||
+    o?.['Nomor WA'] ||
+    o?.['Nomor WhatsApp'] ||
+    o?.wa ||
+    o?.phone ||
+    o?.hp ||
+    o?.['No HP'] ||
+    o?.['No. HP'] ||
+    o?.telepon ||
+    o?.kontak;
+  const whatsapp = normalizePhoneWithZero(rawWa);
+  const address = String(o?.address || o?.alamat || o?.Alamat || o?.['Alamat Lengkap'] || o?.domisili || '').trim();
+  // Baris kosong tanpa ID, nama, dan no WhatsApp tidak dianggap sebagai pemilik valid
+  if (!id && !name && !whatsapp) return null;
+
+  const notesVal = String(
+    o?.notes ||
+      o?.Catatan ||
+      o?.catatan ||
+      o?.keterangan ||
+      o?.informedConsent ||
+      'Persetujuan Tindakan Medis & Pemeriksaan Klinik Terstandar disetujui oleh pemilik.'
+  );
+  return {
+    ...o,
+    id: id || stableIdFrom('own', [name, whatsapp, address]),
+    name: name || 'Pemilik',
+    whatsapp,
+    address,
+    registeredAt: convertAmPmTo24h(String(o?.registeredAt || o?.['Tanggal Daftar'] || o?.['Tgl Daftar'] || o?.['Tanggal Registrasi'] || '')),
+    notes: notesVal,
+    informedConsent: notesVal,
+  };
+}
+
+function sanitizePet(p: any, ownerLookupMap?: Map<string, Owner>): Pet | null {
+  if (!p || typeof p !== 'object') return null;
+
+  const rawOwnerNameStr = String(p?.ownerName ?? '').trim();
+  const rawOwnerWaStr = String(p?.ownerWhatsapp ?? '').trim();
+  const rawNameStr = String(p?.name ?? '').trim();
+  const rawPhotoStr = String(p?.photoUrl ?? '').trim();
+  const rawAgeOrDobStr = String(p?.ageOrDob ?? '').trim();
+  const rawSexVal = p?.sex;
+
+  // Deteksi pergeseran kolom (column shift) di sheet Google Sheets '2_Pasien':
+  // Pada pergeseran ini:
+  // - p.ownerName berisi nomor HP (contoh: 89652700068 / 81802310800)
+  // - p.ownerWhatsapp berisi nama hewan sebenarnya (contoh: 'Hima', 'Cika', 'XX', 'Abundut')
+  // - p.name berisi jenis hewan (contoh: 'Kucing', 'Anjing')
+  // - p.photoUrl berisi tanggal/ISO timestamp pendaftaran (contoh: '2026-08-03T...')
+  // - p.sex berisi angka bobot (kg) atau p.ageOrDob berisi 'Jantan'/'Betina'
+  const isOwnerNamePhone = /^[0-9+]+$/.test(rawOwnerNameStr) && rawOwnerNameStr.length >= 3;
+  const isOwnerWaTextNotPhone = rawOwnerWaStr !== '' && !/^[0-9+\s()-]+$/.test(rawOwnerWaStr);
+  const isNameSpecies = /^(kucing|anjing|cat|dog|kelinci|rabbit|hamster|burung|iguana|musang|sugar glider)$/i.test(rawNameStr);
+  const isPhotoUrlDate = /^\d{4}-\d{2}-\d{2}/.test(rawPhotoStr);
+  const isAgeSexMismatch =
+    /^(jantan|betina|male|female)$/i.test(rawAgeOrDobStr) &&
+    (typeof rawSexVal === 'number' || /^\d+(\.\d+)?$/.test(String(rawSexVal)));
+
+  const isShifted =
+    (isOwnerNamePhone && (isOwnerWaTextNotPhone || isNameSpecies)) ||
+    (isNameSpecies && isPhotoUrlDate) ||
+    (isOwnerNamePhone && isPhotoUrlDate) ||
+    (isAgeSexMismatch && isNameSpecies);
+
+  let id = String(p?.id || p?.ID || p?.Id || '').trim();
+  let ownerId = p?.ownerId ? String(p.ownerId).trim() : undefined;
+  let ownerName = p?.ownerName ? String(p.ownerName).trim() : undefined;
+  const rawOwnerWa =
+    p?.ownerWhatsapp ||
+    p?.whatsapp ||
+    p?.['No WA'] ||
+    p?.['No. WA'] ||
+    p?.['WhatsApp Pemilik'] ||
+    p?.['No WhatsApp'];
+  let ownerWhatsapp = normalizePhoneWithZero(rawOwnerWa);
+  let name = String(
+    p?.name || p?.nama || p?.['Nama Pasien'] || p?.['Nama Hewan'] || p?.['Nama'] || ''
+  ).trim();
+  let type = p?.type || p?.jenis || p?.['Jenis Hewan'] || 'Cat';
+  let breed = String(p?.breed || p?.ras || p?.Ras || '');
+  let ageOrDob = String(p?.ageOrDob || p?.umur || p?.Umur || '');
+  let sex = p?.sex || p?.['Jenis Kelamin'] || 'Jantan';
+  let weight = typeof p?.weight === 'number' ? p.weight : parseFloat(p?.weight || p?.berat) || 0;
+  let photoUrl = p?.photoUrl ? decryptPhotoUrl(String(p.photoUrl)) : undefined;
+  let status = p?.status || p?.Status || 'Sehat';
+  let registeredAt = convertAmPmTo24h(String(p?.registeredAt || p?.['Tanggal Terdaftar'] || ''));
+  let notes = p?.notes ? String(p.notes) : undefined;
+  let informedConsent = p?.informedConsent ? String(p.informedConsent) : undefined;
+
+  if (isShifted) {
+    // Kembalikan ke susunan atribut yang sebenarnya:
+    ownerWhatsapp = normalizePhoneWithZero(rawOwnerNameStr);
+    name = rawOwnerWaStr || 'Pasien';
+    type = rawNameStr || 'Cat';
+    breed = String(p?.type || '').trim();
+    ageOrDob = String(p?.breed || '').trim();
+    sex = /^(jantan|betina)$/i.test(rawAgeOrDobStr)
+      ? ((rawAgeOrDobStr.charAt(0).toUpperCase() + rawAgeOrDobStr.slice(1).toLowerCase()) as any)
+      : 'Jantan';
+    weight = typeof rawSexVal === 'number' ? rawSexVal : parseFloat(rawSexVal) || 0;
+    status = String(p?.weight || 'Sehat').trim();
+    registeredAt = convertAmPmTo24h(rawPhotoStr || '');
+    photoUrl = undefined;
+    ownerName = undefined; // Di-lookup di bawah
+  }
+
+  // Cari nama pemilik dari ownerLookupMap jika ada
+  if (ownerLookupMap) {
+    let matchedOwner: Owner | undefined;
+    if (ownerId && ownerLookupMap.has(ownerId)) {
+      matchedOwner = ownerLookupMap.get(ownerId);
+    }
+    if (!matchedOwner && ownerWhatsapp) {
+      const cleanDigits = ownerWhatsapp.replace(/\D/g, '');
+      if (cleanDigits && ownerLookupMap.has(cleanDigits)) {
+        matchedOwner = ownerLookupMap.get(cleanDigits);
+      }
+    }
+    if (matchedOwner) {
+      if (!ownerId) ownerId = matchedOwner.id;
+      ownerName = matchedOwner.name;
+      if (!ownerWhatsapp) ownerWhatsapp = normalizePhoneWithZero(matchedOwner.whatsapp);
+    }
+  }
+
+  if (!id && !name && !ownerWhatsapp && !ownerId) return null;
+
+  return {
+    ...p,
+    id: id || stableIdFrom('pet', [name, ownerWhatsapp, ownerName, registeredAt]),
+    ownerId,
+    ownerName,
+    ownerWhatsapp,
+    name: name || 'Pasien',
+    type,
+    breed,
+    ageOrDob,
+    sex,
+    weight,
+    photoUrl,
+    status,
+    registeredAt,
+    notes,
+    informedConsent,
+  };
+}
+
+function sanitizeQueue(q: any): VisitQueue | null {
+  if (!q || typeof q !== 'object') return null;
+  const id = String(q?.id || q?.ID || '').trim();
+  const ticketNumber = String(q?.ticketNumber || q?.['No Antrean'] || q?.['Nomor Tiket'] || q?.ticket || '').trim();
+  const petName = String(q?.petName || q?.pasien || q?.['Nama Pasien'] || q?.['Nama Hewan'] || '').trim();
+  const ownerName = String(q?.ownerName || q?.pemilik || q?.['Nama Pemilik'] || '').trim();
+  if (!id && !ticketNumber && !petName && !ownerName) return null;
+
+  const rawPhoto = q?.photoUrl || q?.foto || q?.['Foto'];
+  const photoUrl = rawPhoto ? decryptPhotoUrl(String(rawPhoto)) : undefined;
+
+  return {
+    ...q,
+    id: id || stableIdFrom('q', [ticketNumber, petName, ownerName, q?.createdAt]),
+    ticketNumber: ticketNumber || 'A-00',
+    ownerWhatsapp: normalizePhoneWithZero(q?.ownerWhatsapp || q?.whatsapp || q?.['No WA']),
+    ownerName: ownerName || 'Pemilik',
+    petId: String(q?.petId || ''),
+    petName: petName || 'Pasien',
+    petType: q?.petType || q?.type || q?.['Jenis Hewan'] || 'Cat',
+    photoUrl,
+    serviceType: q?.serviceType || q?.layanan || q?.['Jenis Layanan'] || 'Consultation',
+    chiefComplaint: String(q?.chiefComplaint || q?.keluhan || q?.['Keluhan Utama'] || ''),
+    status: q?.status || q?.Status || 'Menunggu',
+    createdAt: convertAmPmTo24h(String(q?.createdAt || q?.['Tanggal Dibuat'] || '')),
+    completedAt: q?.completedAt ? convertAmPmTo24h(String(q.completedAt)) : undefined,
+    assignedDoctor: q?.assignedDoctor ? String(q.assignedDoctor) : undefined,
+    informedConsent: q?.informedConsent ? String(q.informedConsent) : undefined,
+  };
+}
+
+function saveStored<T>(key: string, value: T) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.error('Error saving to storage', err);
+  }
+}
+
+/**
+ * Memastikan field bertipe array/objek (prescriptions, vitals, soap, diagnosticAttachments)
+ * selalu berbentuk benar walau sel di Google Sheets kosong atau rusak formatnya
+ * (biasanya tersimpan sebagai string mentah kalau bukan JSON valid). Mencegah error
+ * "x.map is not a function" saat komponen merender data ini.
+ */
+function coerceArray<T>(val: any): T[] {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim()) {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // bukan JSON valid, abaikan dan kembalikan array kosong
+    }
+  }
+  return [];
+}
+
+function coerceObject<T extends Record<string, any>>(val: any, defaults: T): T {
+  if (val && typeof val === 'object' && !Array.isArray(val)) return { ...defaults, ...val };
+  if (typeof val === 'string' && val.trim()) {
+    try {
+      const parsed = JSON.parse(val);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...defaults, ...parsed };
+    } catch {
+      // bukan JSON valid, abaikan dan kembalikan default
+    }
+  }
+  return { ...defaults };
+}
+
+function sanitizeSoapRecord(s: any): SoapRecord | null {
+  if (!s || typeof s !== 'object') return null;
+  if (!s.id && !s.petName && !s.petId) return null;
+
+  const dateStr = convertAmPmTo24h(s.date || s['Tanggal'] || '');
+  return {
+    ...s,
+    id: s.id ? String(s.id).trim() : stableIdFrom('soap', [s.petId, s.petName, dateStr, s.veterinarian]),
+    date: dateStr,
+    prescriptions: coerceArray<PrescriptionItem>(s.prescriptions),
+    diagnosticAttachments: s.diagnosticAttachments !== undefined ? decryptDiagnosticAttachments(s.diagnosticAttachments) : undefined,
+    vitals: coerceObject(s.vitals, { weight: 0, temperature: 0, heartRate: 0, respiratoryRate: 0 }),
+    soap: coerceObject(s.soap, { subjective: '', objective: '', assessment: '', plan: '' }),
+  };
+}
+
+export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [owners, setOwners] = useState<Owner[]>(() => {
+    const raw = loadStored(STORAGE_KEYS.OWNERS, INITIAL_OWNERS);
+    return Array.isArray(raw) ? (raw.map(sanitizeOwner).filter((x): x is Owner => x !== null)) : INITIAL_OWNERS;
+  });
+  const [pets, setPets] = useState<Pet[]>(() => {
+    const raw = loadStored(STORAGE_KEYS.PETS, INITIAL_PETS);
+    return Array.isArray(raw) ? raw.map((p) => sanitizePet(p)).filter((x): x is Pet => x !== null) : INITIAL_PETS;
+  });
+  const [queues, setQueues] = useState<VisitQueue[]>(() => {
+    const raw = loadStored(STORAGE_KEYS.QUEUES, INITIAL_QUEUES);
+    return Array.isArray(raw) ? (raw.map(sanitizeQueue).filter((x): x is VisitQueue => x !== null)) : INITIAL_QUEUES;
+  });
+  const [inventory, setInventory] = useState<InventoryItem[]>(() => loadStored(STORAGE_KEYS.INVENTORY, INITIAL_INVENTORY));
+  const [cages, setCages] = useState<InpatientCage[]>(() => sanitizeCagesList(loadStored(STORAGE_KEYS.CAGES, INITIAL_CAGES)));
+  const [inpatientHistory, setInpatientHistory] = useState<InpatientHistoryRecord[]>(() => loadStored(STORAGE_KEYS.INPATIENT_HISTORY, []));
+  const [soapRecords, setSoapRecords] = useState<SoapRecord[]>(() => {
+    const raw = loadStored(STORAGE_KEYS.SOAP, INITIAL_SOAP_RECORDS);
+    return Array.isArray(raw) ? (raw.map(sanitizeSoapRecord).filter((x): x is SoapRecord => x !== null)) : INITIAL_SOAP_RECORDS;
+  });
+  const [bookings, setBookings] = useState<BookingAppointment[]>(() => loadStored(STORAGE_KEYS.BOOKINGS, INITIAL_BOOKINGS));
+  const [feedbacks, setFeedbacks] = useState<CustomerFeedback[]>(() => loadStored(STORAGE_KEYS.FEEDBACKS, INITIAL_FEEDBACKS));
+  const [staffList, setStaffList] = useState<StaffUser[]>(() => loadStored(STORAGE_KEYS.STAFF_LIST, INITIAL_STAFF));
+  const [currentUser, setCurrentUser] = useState<StaffUser | null>(() => loadStored(STORAGE_KEYS.STAFF_USER, null));
+  const [currentServingTicket, setCurrentServingTicket] = useState<string>(() => loadStored(STORAGE_KEYS.SERVING_TICKET, '-'));
+  const [activePatientTicket, setActivePatientTicket] = useState<string | null>(() => loadStored(STORAGE_KEYS.ACTIVE_PATIENT, null));
+  const [callNotification, setCallNotification] = useState<CallNotification | null>(null);
+
+  // Spreadsheet Database State
+  const [spreadsheetConfig, setSpreadsheetConfig] = useState<SpreadsheetConfig>(() => {
+    const stored = loadStored<SpreadsheetConfig>(STORAGE_KEYS.SPREADSHEET_CONFIG, DEFAULT_SPREADSHEET_CONFIG);
+    if (!stored || !stored.webAppUrl || stored.webAppUrl !== DEFAULT_SPREADSHEET_CONFIG.webAppUrl) {
+      return DEFAULT_SPREADSHEET_CONFIG;
+    }
+    return stored;
+  });
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() =>
+    spreadsheetConfig.isConnected ? 'connected' : 'idle'
+  );
+  const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
+
+  // Auto-pull from spreadsheet on initial mount if connected (silently in background)
+  useEffect(() => {
+    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
+      syncFromSpreadsheet(true);
+    }
+  }, []);
+
+  // ==========================================
+  // AUTO-PULL POLLING — supaya edit manual di Google Sheets ikut
+  // muncul di app tanpa harus klik "Sinkron" manual.
+  // Strategi 2 lapis biar hemat request ke Apps Script:
+  //  1) Tiap 15 detik, cek ringan (action=ping) yang cuma balikin jumlah
+  //     baris tiap sheet — murah, tidak baca seluruh isi sel.
+  //  2) Full-pull (fetchAll) HANYA dijalankan kalau jumlah baris berubah
+  //     (ada tambah/hapus baris), ATAU dipaksa tiap ~1 menit sekali untuk
+  //     menangkap kalau ada yang mengedit ISI sel tanpa mengubah jumlah baris.
+  const pollCountsRef = useRef<Record<string, number> | null>(null);
+  const pollTickRef = useRef(0);
+  const syncStatusRef = useRef(syncStatus);
+  useEffect(() => { syncStatusRef.current = syncStatus; }, [syncStatus]);
+
+  // Flag untuk mencegah loop balik saat data ditarik dari Google Spreadsheet
+  const isRemoteSyncRef = useRef<boolean>(false);
+  // Flag yang menandakan apakah proses penarikan data awal dari Spreadsheet sudah selesai
+  const hasInitialSyncedRef = useRef<boolean>(false);
+
+  // Selalu simpan state terbaru ke ref untuk perbandingan akurat tanpa stale-closure
+  const stateRefs = useRef({
+    owners,
+    pets,
+    queues,
+    inventory,
+    cages,
+    inpatientHistory,
+    soapRecords,
+    bookings,
+    feedbacks,
+    staffList,
+  });
+  stateRefs.current = {
+    owners,
+    pets,
+    queues,
+    inventory,
+    cages,
+    inpatientHistory,
+    soapRecords,
+    bookings,
+    feedbacks,
+    staffList,
+  };
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (!spreadsheetConfig.isConnected || !spreadsheetConfig.autoSync || !spreadsheetConfig.webAppUrl) {
+      pollCountsRef.current = null;
+      pollTickRef.current = 0;
+      return;
+    }
+
+    const url = spreadsheetConfig.webAppUrl;
+
+    // Tarik data seketika saat aplikasi dimuat agar data lokal langsung tersinkron tanpa menunggu polling
+    syncFromSpreadsheet(true).catch(() => {});
+
+    const poll = async () => {
+      // Jangan polling kalau tab sedang tidak aktif atau sedang ada sync lain berjalan
+      if (document.visibilityState !== 'visible') return;
+      if (syncStatusRef.current === 'syncing') return;
+
+      try {
+        const ping = await testSpreadsheetConnection(url);
+        pollTickRef.current += 1;
+        // Tiap ~8 detik (setiap 2 tick) paksa full-refresh untuk mendeteksi perubahan isi sel atau penghapusan
+        const forceFull = pollTickRef.current % 2 === 0;
+
+        if (ping.success && ping.counts) {
+          const prevCounts = pollCountsRef.current;
+          const rowCountChanged =
+            !prevCounts || Object.keys(ping.counts).some((k) => ping.counts![k] !== prevCounts[k]);
+          pollCountsRef.current = ping.counts;
+
+          if (rowCountChanged || forceFull) {
+            await syncFromSpreadsheet(true);
+          }
+        } else if (ping.success) {
+          await syncFromSpreadsheet(true);
+        }
+      } catch {
+        // Abaikan kegagalan polling — dicoba lagi di tick berikutnya
+      }
+    };
+
+    const intervalId = setInterval(poll, 4000);
+    return () => clearInterval(intervalId);
+  }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl]);
+
+  // Sync with localStorage
+  useEffect(() => { saveStored(STORAGE_KEYS.OWNERS, owners); }, [owners]);
+  useEffect(() => { saveStored(STORAGE_KEYS.PETS, pets); }, [pets]);
+  useEffect(() => { saveStored(STORAGE_KEYS.QUEUES, queues); }, [queues]);
+  useEffect(() => { saveStored(STORAGE_KEYS.INVENTORY, inventory); }, [inventory]);
+  useEffect(() => { saveStored(STORAGE_KEYS.CAGES, cages); }, [cages]);
+  useEffect(() => { saveStored(STORAGE_KEYS.INPATIENT_HISTORY, inpatientHistory); }, [inpatientHistory]);
+  useEffect(() => { saveStored(STORAGE_KEYS.SOAP, soapRecords); }, [soapRecords]);
+  useEffect(() => { saveStored(STORAGE_KEYS.BOOKINGS, bookings); }, [bookings]);
+  useEffect(() => { saveStored(STORAGE_KEYS.FEEDBACKS, feedbacks); }, [feedbacks]);
+  useEffect(() => { saveStored(STORAGE_KEYS.STAFF_LIST, staffList); }, [staffList]);
+  useEffect(() => { saveStored(STORAGE_KEYS.STAFF_USER, currentUser); }, [currentUser]);
+  useEffect(() => { saveStored(STORAGE_KEYS.SERVING_TICKET, currentServingTicket); }, [currentServingTicket]);
+  useEffect(() => { saveStored(STORAGE_KEYS.ACTIVE_PATIENT, activePatientTicket); }, [activePatientTicket]);
+  useEffect(() => { saveStored(STORAGE_KEYS.SPREADSHEET_CONFIG, spreadsheetConfig); }, [spreadsheetConfig]);
+
+  // Otomatis sinkronkan nomor tiket "Sedang Dilayani" berdasarkan status antrean yang aktif di Poli
+  // Jika antrean kosong atau tidak ada pasien di poli, reset kembali ke '-'
+  useEffect(() => {
+    const activePoliQueue = queues.find((q) => q.status === 'Di Ruang Poli' && isToday(q.createdAt));
+    setCurrentServingTicket(activePoliQueue ? activePoliQueue.ticketNumber : '-');
+  }, [queues]);
+
+  // Bersihkan activePatientTicket jika tiket tersebut sudah tidak ada di antrean (misal dihapus dari spreadsheet)
+  useEffect(() => {
+    if (activePatientTicket && !queues.some((q) => q.ticketNumber === activePatientTicket)) {
+      setActivePatientTicket(null);
+    }
+  }, [queues, activePatientTicket]);
+
+  // Background Auto-Sync ke Google Spreadsheet per-tabel dengan pencegah loop
+  const markSynced = (nowStr: string) =>
+    setSpreadsheetConfig((prev) => ({ ...prev, lastSyncedAt: nowStr }));
+
+  useAutoSyncTable('owners', owners, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('pets', pets, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('queues', queues, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('inventory', inventory, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('cages', cages, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('soapRecords', soapRecords, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('bookings', bookings, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('feedbacks', feedbacks, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+  useAutoSyncTable('staff', staffList, spreadsheetConfig, setSyncStatus, setLastSyncMessage, markSynced, isRemoteSyncRef, hasInitialSyncedRef);
+
+  // ==========================================
+  // SPREADSHEET ACTIONS
+  // ==========================================
+
+  const connectSpreadsheet = async (url: string): Promise<{ success: boolean; message: string }> => {
+    setSyncStatus('syncing');
+    setLastSyncMessage('Menguji koneksi ke Google Spreadsheet...');
+
+    const testRes = await testSpreadsheetConnection(url);
+    if (!testRes.success) {
+      setSyncStatus('error');
+      setLastSyncMessage(testRes.message);
+      return testRes;
+    }
+
+    // Try pulling initial data if available
+    const pullRes = await pullFullDatabaseFromSpreadsheet(url);
+    if (pullRes.success && pullRes.data) {
+      importDatabase(pullRes.data);
+    } else {
+      // If the spreadsheet is brand new, push current local data to initialize it
+      const currentSchema: SpreadsheetDatabaseSchema = {
+        owners,
+        pets,
+        queues,
+        soapRecords,
+        cages,
+        inventory,
+        bookings,
+        staff: staffList,
+        feedbacks,
+      };
+      await pushFullDatabaseToSpreadsheet(url, currentSchema);
+    }
+
+    const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const newConfig: SpreadsheetConfig = {
+      ...spreadsheetConfig,
+      webAppUrl: url.trim(),
+      isConnected: true,
+      lastSyncedAt: nowStr,
+    };
+
+    setSpreadsheetConfig(newConfig);
+    setSyncStatus('connected');
+    const msg = 'Berhasil terhubung ke Google Spreadsheet Database!';
+    setLastSyncMessage(msg);
+    return { success: true, message: msg };
+  };
+
+  const disconnectSpreadsheet = () => {
+    setSpreadsheetConfig((prev) => ({
+      ...prev,
+      isConnected: false,
+    }));
+    setSyncStatus('idle');
+    setLastSyncMessage('Spreadsheet diputuskan. Menggunakan penyimpanan lokal.');
+  };
+
+  const updateSpreadsheetConfig = (partial: Partial<SpreadsheetConfig>) => {
+    setSpreadsheetConfig((prev) => ({ ...prev, ...partial }));
+  };
+
+  const syncToSpreadsheet = async (customDb?: SpreadsheetDatabaseSchema): Promise<{ success: boolean; message: string }> => {
+    if (!spreadsheetConfig.webAppUrl) {
+      return { success: false, message: 'URL Google Apps Script belum diatur.' };
+    }
+
+    const targetDb = customDb || {
+      owners,
+      pets,
+      queues,
+      soapRecords,
+      cages,
+      inventory,
+      bookings,
+      staff: staffList,
+      feedbacks,
+    };
+
+    // Safeguard: Cegah sinkronisasi jika data lokal kosong agar tidak menimpa sheet dengan kosong
+    if ((targetDb.owners || []).length === 0 && (targetDb.pets || []).length === 0) {
+      setSyncStatus('connected');
+      const errorMsg = 'Gagal sinkron: Database lokal kosong. Tarik data terlebih dahulu dari Spreadsheet untuk mencegah terhapusnya data!';
+      setLastSyncMessage(errorMsg);
+      return { success: false, message: errorMsg };
+    }
+
+    setSyncStatus('syncing');
+    setLastSyncMessage('Mengirim seluruh data ke Google Spreadsheet...');
+
+    const res = await pushFullDatabaseToSpreadsheet(spreadsheetConfig.webAppUrl, targetDb);
+    if (res.success) {
+      const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+      setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+      setSyncStatus('connected');
+      setLastSyncMessage(`Sinkronisasi berhasil pada ${nowStr} WIB`);
+    } else {
+      setSyncStatus('error');
+      setLastSyncMessage(res.message);
+    }
+    return res;
+  };
+
+  const syncFromSpreadsheet = async (silent: boolean = false): Promise<{ success: boolean; message: string }> => {
+    if (!spreadsheetConfig.webAppUrl) {
+      return { success: false, message: 'URL Google Apps Script belum diatur.' };
+    }
+
+    if (!silent) {
+      setSyncStatus('syncing');
+      setLastSyncMessage('Menarik data terbaru dari Google Spreadsheet...');
+    }
+
+    const res = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
+    if (res.success && res.data) {
+      hasInitialSyncedRef.current = true;
+      importDatabase(res.data);
+      const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+      setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+      setSyncStatus('connected');
+      if (!silent) {
+        setLastSyncMessage(`Data berhasil ditarik dari Spreadsheet pada ${nowStr} WIB`);
+      }
+    } else {
+      if (!silent) {
+        setSyncStatus('error');
+        setLastSyncMessage(res.message);
+      }
+    }
+    return res;
+  };
+
+  const importDatabase = (data: Partial<SpreadsheetDatabaseSchema>) => {
+    // Hanya panggil setState kalau isinya benar-benar berbeda dari yang sudah ada.
+    // Mencegah pull (dari polling) memicu auto-sync push balik yang sia-sia,
+    // dan mencegah re-render yang tidak perlu.
+    const applyIfChanged = <T,>(incoming: T[] | undefined, current: T[], setter: (v: T[]) => void) => {
+      if (incoming === undefined || !Array.isArray(incoming)) return;
+      if (JSON.stringify(incoming) !== JSON.stringify(current)) {
+        isRemoteSyncRef.current = true;
+        setter(incoming);
+        setTimeout(() => {
+          isRemoteSyncRef.current = false;
+        }, 2000);
+      }
+    };
+
+    const completedHistoriesToAppend: InpatientHistoryRecord[] = [];
+
+    // 1. Bersihkan & petakan data Pemilik
+    let cleanOwners: Owner[] = [];
+    if (data.owners !== undefined && Array.isArray(data.owners)) {
+      cleanOwners = data.owners.map(sanitizeOwner).filter((x): x is Owner => x !== null);
+    } else {
+      cleanOwners = [...stateRefs.current.owners];
+    }
+
+    const ownerLookupMap = new Map<string, Owner>();
+    cleanOwners.forEach((o) => {
+      if (o.id) ownerLookupMap.set(o.id, o);
+      if (o.whatsapp) {
+        ownerLookupMap.set(normalizePhoneWithZero(o.whatsapp), o);
+        const cleanDigits = String(o.whatsapp).replace(/\D/g, '');
+        if (cleanDigits) ownerLookupMap.set(cleanDigits, o);
+      }
+    });
+
+    // 2. Bersihkan & petakan data Pasien (dengan deteksi & pemulihan kolom yang bergeser)
+    if (data.pets !== undefined && Array.isArray(data.pets)) {
+      const cleanPets = data.pets
+        .map((p) => sanitizePet(p, ownerLookupMap))
+        .filter((x): x is Pet => x !== null);
+
+      // Pastikan jika ada pemilik di pet yang belum ada di cleanOwners, otomatis ditambahkan
+      cleanPets.forEach((p) => {
+        if (p.ownerWhatsapp) {
+          const normWa = normalizePhoneWithZero(p.ownerWhatsapp);
+          const cleanDigits = normWa.replace(/\D/g, '');
+          const existing =
+            (p.ownerId && ownerLookupMap.get(p.ownerId)) ||
+            ownerLookupMap.get(normWa) ||
+            ownerLookupMap.get(cleanDigits);
+
+          if (!existing && (p.ownerName || p.ownerWhatsapp)) {
+            const newOwn: Owner = {
+              id: p.ownerId || stableIdFrom('own', [p.ownerName, normWa]),
+              name: p.ownerName || 'Pemilik',
+              whatsapp: normWa,
+              address: '',
+              registeredAt: p.registeredAt || new Date().toISOString(),
+              notes: 'Persetujuan Tindakan Medis & Pemeriksaan Klinik Terstandar disetujui oleh pemilik.',
+              informedConsent: 'Persetujuan Tindakan Medis & Pemeriksaan Klinik Terstandar disetujui oleh pemilik.',
+            };
+            cleanOwners.push(newOwn);
+            ownerLookupMap.set(newOwn.id, newOwn);
+            ownerLookupMap.set(normWa, newOwn);
+            if (cleanDigits) ownerLookupMap.set(cleanDigits, newOwn);
+          }
+        }
+      });
+
+      applyIfChanged(cleanPets, stateRefs.current.pets, setPets);
+    }
+
+    applyIfChanged(cleanOwners, stateRefs.current.owners, setOwners);
+    if (data.queues !== undefined && Array.isArray(data.queues)) {
+      const cleanQueues = data.queues.map(sanitizeQueue).filter((x): x is VisitQueue => x !== null);
+      applyIfChanged(cleanQueues, stateRefs.current.queues, setQueues);
+    }
+    if (data.inventory !== undefined && Array.isArray(data.inventory)) {
+      const cleanInv = data.inventory.filter((i) => i && (i.id || i.name));
+      applyIfChanged(cleanInv, stateRefs.current.inventory, setInventory);
+    }
+    if (data.cages !== undefined && Array.isArray(data.cages)) {
+      const activeCagesMap = new Map<string, InpatientCage>();
+      // Inisialisasi strictly HANYA 12 kandang fisik standar klinik (A1 - B6)
+      INITIAL_CAGES.forEach((ic) => activeCagesMap.set(ic.id, { ...ic }));
+
+      data.cages.forEach((c) => {
+        if (!c) return;
+
+        let obs: any = c.observations;
+        if (typeof obs === 'string' && obs.trim()) {
+          try {
+            obs = JSON.parse(obs);
+          } catch {
+            obs = [];
+          }
+        }
+        const cleanObs = Array.isArray(obs) ? obs : [];
+
+        const normalizedId = normalizeCageId(c.id, c.label);
+        const statusLower = String(c.status || '').toLowerCase();
+        // cag-..., status selesai, atau ID non-fisik adalah data riwayat rawat inap
+        const isHistorical = !normalizedId || String(c.id || '').startsWith('cag-') || statusLower === 'selesai';
+
+        if (isHistorical) {
+          // Cari ID pasien berdasarkan c.petId atau nama pasien
+          let targetPetId = c.petId;
+          let targetPetName = c.petName || 'Pasien';
+          let targetPetType = c.petType || 'Cat';
+          let targetOwnerName = c.ownerName || 'Pemilik';
+          let targetOwnerWhatsapp = c.ownerWhatsapp ? normalizePhoneWithZero(c.ownerWhatsapp) : '-';
+
+          if (!targetPetId && c.petName) {
+            const cleanPetName = String(c.petName).toLowerCase().trim();
+            const matchedPet = (stateRefs.current.pets || []).find((p) => {
+              const nameMatches = p.name.toLowerCase().trim() === cleanPetName;
+              if (!nameMatches) return false;
+              if (c.ownerWhatsapp && p.ownerWhatsapp) {
+                return normalizePhoneWithZero(p.ownerWhatsapp) === normalizePhoneWithZero(c.ownerWhatsapp);
+              }
+              return true;
+            });
+            if (matchedPet) {
+              targetPetId = matchedPet.id;
+              targetPetName = matchedPet.name;
+              targetPetType = matchedPet.type;
+              targetOwnerName = matchedPet.ownerName || targetOwnerName;
+              targetOwnerWhatsapp = matchedPet.ownerWhatsapp || targetOwnerWhatsapp;
+            } else {
+              targetPetId = stableIdFrom('pet', [targetPetName, targetOwnerName, targetOwnerWhatsapp]);
+            }
+          }
+
+          if (targetPetId || c.petName) {
+            const now = new Date();
+            const dischargeTimeFormatted = `${now.toISOString().split('T')[0]} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            const admittedTime = c.admittedAt || dischargeTimeFormatted;
+            
+            const existingHist = stateRefs.current.inpatientHistory || [];
+            const isDup = existingHist.some(
+              (eh) =>
+                (targetPetId && eh.petId === targetPetId && eh.admittedAt === admittedTime) ||
+                (eh.petName.toLowerCase().trim() === targetPetName.toLowerCase().trim() && eh.admittedAt === admittedTime)
+            );
+
+            if (!isDup) {
+              const histId = `hist-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+              completedHistoriesToAppend.push({
+                id: histId,
+                cageId: '',
+                cageLabel: '',
+                petId: targetPetId || '',
+                petName: targetPetName,
+                petType: targetPetType,
+                ownerName: targetOwnerName,
+                ownerWhatsapp: targetOwnerWhatsapp,
+                diagnosis: c.diagnosis || 'Perawatan Rawat Inap',
+                admittedAt: admittedTime,
+                dischargedAt: dischargeTimeFormatted,
+                veterinarian: c.veterinarian || 'drh. Sarah Wijaya',
+                observations: cleanObs,
+              });
+            }
+          }
+
+          // Jika record riwayat memiliki ID kandang fisik (A1-B6), pastikan unit fisik tersebut kosong (Available) di layout
+          if (normalizedId && activeCagesMap.has(normalizedId)) {
+            const defaultCage = activeCagesMap.get(normalizedId)!;
+            activeCagesMap.set(normalizedId, {
+              ...defaultCage,
+              status: 'Available',
+              petId: undefined,
+              petName: undefined,
+              petType: undefined,
+              ownerName: undefined,
+              ownerWhatsapp: undefined,
+              diagnosis: undefined,
+              admittedAt: undefined,
+              veterinarian: undefined,
+              observations: [],
+            });
+          }
+          // PENTING: Data cag-... TIDAK BOLEH dimasukkan ke layout activeCagesMap!
+        } else if (normalizedId && activeCagesMap.has(normalizedId)) {
+          // Unit kandang fisik A1 - B6 yang sedang terisi atau dibersihkan
+          const defaultCage = activeCagesMap.get(normalizedId)!;
+          activeCagesMap.set(normalizedId, {
+            ...defaultCage,
+            ...c,
+            id: normalizedId, // ID kandang selalu mengikuti nama kandang fisik (A1..B6)
+            label: defaultCage.label,
+            status: c.status === 'Cleaning' ? 'Cleaning' : 'Occupied',
+            observations: cleanObs,
+          });
+        }
+      });
+
+      if (completedHistoriesToAppend.length > 0) {
+        setInpatientHistory((prev) => {
+          const merged = [...prev];
+          completedHistoriesToAppend.forEach((newH) => {
+            if (!merged.some((eh) => (newH.petId && eh.petId === newH.petId && eh.admittedAt === newH.admittedAt) || (eh.petName.toLowerCase() === newH.petName.toLowerCase() && eh.admittedAt === newH.admittedAt))) {
+              merged.unshift(newH);
+            }
+          });
+          return merged;
+        });
+      }
+
+      // Pastikan urutan dan jumlah kandang selalu tepat 12 unit fisik (A1-A6 & B1-B6)
+      const finalCages = INITIAL_CAGES.map((ic) => activeCagesMap.get(ic.id) || ic);
+      applyIfChanged(finalCages, stateRefs.current.cages, setCages);
+    }
+    if (data.soapRecords !== undefined && Array.isArray(data.soapRecords)) {
+      const cleanSoap = data.soapRecords.map(sanitizeSoapRecord).filter((x): x is SoapRecord => x !== null);
+
+      // Pastikan rekam medis pelepasan rawat inap dari status Selesai otomatis ditambahkan ke rekam medis
+      completedHistoriesToAppend.forEach((h) => {
+        const alreadyHasSoap = cleanSoap.some(
+          (s) =>
+            (h.petId && s.petId === h.petId && s.soap?.subjective?.includes(h.admittedAt)) ||
+            (s.petName?.toLowerCase().trim() === h.petName.toLowerCase().trim() && s.soap?.subjective?.includes(h.admittedAt))
+        );
+        if (!alreadyHasSoap) {
+          const nextSoapId = `soap-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          cleanSoap.unshift({
+            id: nextSoapId,
+            petId: h.petId,
+            petName: h.petName,
+            ownerName: h.ownerName,
+            ownerWhatsapp: h.ownerWhatsapp,
+            veterinarian: h.veterinarian,
+            date: h.dischargedAt,
+            vitals: {
+              weight: 0,
+              temperature: h.observations?.[0]?.temp || 38.5,
+              heartRate: 0,
+              respiratoryRate: 0,
+            },
+            soap: {
+              subjective: `Rawat Inap Selesai.\nMasuk: ${h.admittedAt}\nKeluar: ${h.dischargedAt}`,
+              objective: `Pasien dipulangkan dalam kondisi stabil. Log observasi rawat inap memiliki ${h.observations?.length || 0} entri.`,
+              assessment: `Selesai Rawat Inap - Diagnosis: ${h.diagnosis}`,
+              plan: `Edukasi owner mengenai pemeliharaan mandiri, pemulihan pasca tindakan medis, dan terapi rawat jalan di rumah.`,
+            },
+            prescriptions: [],
+            serviceFee: 0,
+          });
+        }
+      });
+
+      applyIfChanged(cleanSoap, stateRefs.current.soapRecords, setSoapRecords);
+    } else if (completedHistoriesToAppend.length > 0) {
+      // Jika soapRecords tidak disertakan dalam sync saat ini, perbarui soapRecords secara lokal
+      setSoapRecords((prev) => {
+        const merged = [...prev];
+        completedHistoriesToAppend.forEach((h) => {
+          const alreadyHasSoap = merged.some(
+            (s) =>
+              (h.petId && s.petId === h.petId && s.soap?.subjective?.includes(h.admittedAt)) ||
+              (s.petName?.toLowerCase().trim() === h.petName.toLowerCase().trim() && s.soap?.subjective?.includes(h.admittedAt))
+          );
+          if (!alreadyHasSoap) {
+            const nextSoapId = `soap-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+            merged.unshift({
+              id: nextSoapId,
+              petId: h.petId,
+              petName: h.petName,
+              ownerName: h.ownerName,
+              ownerWhatsapp: h.ownerWhatsapp,
+              veterinarian: h.veterinarian,
+              date: h.dischargedAt,
+              vitals: {
+                weight: 0,
+                temperature: h.observations?.[0]?.temp || 38.5,
+                heartRate: 0,
+                respiratoryRate: 0,
+              },
+              soap: {
+                subjective: `Rawat Inap Selesai.\nMasuk: ${h.admittedAt}\nKeluar: ${h.dischargedAt}`,
+                objective: `Pasien dipulangkan dalam kondisi stabil. Log observasi rawat inap memiliki ${h.observations?.length || 0} entri.`,
+                assessment: `Selesai Rawat Inap - Diagnosis: ${h.diagnosis}`,
+                plan: `Edukasi owner mengenai pemeliharaan mandiri, pemulihan pasca tindakan medis, dan terapi rawat jalan di rumah.`,
+              },
+              prescriptions: [],
+              serviceFee: 0,
+            });
+          }
+        });
+        return merged;
+      });
+    }
+    if (data.bookings !== undefined && Array.isArray(data.bookings)) {
+      const cleanBookings = data.bookings.filter((b) => b && (b.id || b.petName || b.ownerName));
+      applyIfChanged(cleanBookings, stateRefs.current.bookings, setBookings);
+    }
+    if (data.feedbacks !== undefined && Array.isArray(data.feedbacks)) {
+      const cleanFeedbacks = data.feedbacks.filter((f) => f && (f.id || f.ticketNumber || f.feedbackText));
+      applyIfChanged(cleanFeedbacks, stateRefs.current.feedbacks, setFeedbacks);
+    }
+    if (data.staff !== undefined && Array.isArray(data.staff) && data.staff.length > 0) {
+      const normalizedStaff: StaffUser[] = data.staff
+        .map((s, idx) => {
+          const username = String(s.username || '').trim().toLowerCase();
+          const role: StaffRole = s.role === 'Dokter Hewan' ? 'Dokter Hewan' : 'Staff Admin / Frontdesk';
+          const pass =
+            s.password !== undefined && s.password !== null && String(s.password).trim() !== ''
+              ? String(s.password).trim()
+              : 'admin';
+          return {
+            id: s.id && String(s.id).trim() ? String(s.id).trim() : `staff-${username || idx + 1}`,
+            username,
+            name: String(s.name || s.username || 'Staf Admin').trim(),
+            role,
+            password: pass,
+            avatar: s.avatar && String(s.avatar).trim() ? String(s.avatar).trim() : (role === 'Dokter Hewan' ? '👩‍⚕️' : '👨‍💼'),
+          };
+        })
+        .filter((s) => s.username.length > 0);
+
+      if (normalizedStaff.length > 0) {
+        applyIfChanged(normalizedStaff, stateRefs.current.staffList, (incoming) => {
+          setStaffList(incoming);
+          if (currentUser) {
+            const updatedMe = incoming.find(
+              (s) => s.id === currentUser.id || s.username.toLowerCase() === currentUser.username.toLowerCase()
+            );
+            if (updatedMe) {
+              setCurrentUser(updatedMe);
+            }
+          }
+        });
+      }
+    }
+  };
+
+  const clearAllData = () => {
+    setOwners([]);
+    setPets([]);
+    setQueues([]);
+    setInventory([]);
+    setCages(INITIAL_CAGES);
+    setSoapRecords([]);
+    setBookings([]);
+    setFeedbacks([]);
+    setStaffList(INITIAL_STAFF);
+    setCurrentServingTicket('-');
+    setActivePatientTicket(null);
+  };
+
+  const resetToInitialData = () => {
+    clearAllData();
+  };
+
+  const sanitizeAllExistingDates = (): SpreadsheetDatabaseSchema => {
+    const cleanOwners = owners.map((o) => ({
+      ...o,
+      registeredAt: sanitizeIsoToLocalString(o.registeredAt),
+    }));
+    const cleanPets = pets.map((p) => ({
+      ...p,
+      registeredAt: sanitizeIsoToLocalString(p.registeredAt),
+    }));
+    const cleanQueues = queues.map((q) => ({
+      ...q,
+      createdAt: sanitizeIsoToLocalString(q.createdAt),
+    }));
+    const cleanSoap = soapRecords.map((s) => ({
+      ...s,
+      date: sanitizeIsoToLocalString(s.date),
+    }));
+    const cleanBookings = bookings.map((b) => ({
+      ...b,
+      date: sanitizeIsoToLocalString(b.date),
+    }));
+    const cleanFeedbacks = feedbacks.map((f) => ({
+      ...f,
+      submittedAt: sanitizeIsoToLocalString(f.submittedAt),
+    }));
+
+    setOwners(cleanOwners);
+    setPets(cleanPets);
+    setQueues(cleanQueues);
+    setSoapRecords(cleanSoap);
+    setBookings(cleanBookings);
+    setFeedbacks(cleanFeedbacks);
+
+    return {
+      owners: cleanOwners,
+      pets: cleanPets,
+      queues: cleanQueues,
+      soapRecords: cleanSoap,
+      cages,
+      inventory,
+      bookings: cleanBookings,
+      staff: staffList,
+      feedbacks: cleanFeedbacks,
+    };
+  };
+
+  // ==========================================
+  // PATIENT REGISTRATION & QUEUE
+  // ==========================================
+
+  const registerPatient = (data: RegisterData): string => {
+    const cleanPhone = normalizePhoneWithZero(data.owner.whatsapp);
+    const now = new Date();
+    const timeString = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')} WIB`;
+    const regTimestamp = getRegistrationTimestamp(now);
+    const consentStatement =
+      data.informedConsent ||
+      'Disetujui: Bebas tuntutan resiko medis sesuai kaidah kedokteran hewan';
+
+    // 1. Owner Linkage
+    let owner = owners.find((o) => normalizePhoneWithZero(o.whatsapp) === cleanPhone);
+    if (!owner) {
+      const nextOwnerId = generateSequentialId('own', owners.map((o) => o.id));
+      owner = {
+        id: nextOwnerId,
+        name: data.owner.name.trim(),
+        whatsapp: cleanPhone,
+        address: data.owner.address.trim(),
+        registeredAt: regTimestamp,
+        notes: consentStatement,
+        informedConsent: consentStatement,
+      };
+      setOwners((prev) => [owner!, ...prev]);
+    } else {
+      owner = {
+        ...owner,
+        whatsapp: cleanPhone,
+        notes: consentStatement,
+        informedConsent: consentStatement,
+      };
+      setOwners((prev) => prev.map((o) => (o.id === owner!.id ? owner! : o)));
+    }
+
+    // 2. Pet Linkage
+    let pet = pets.find(
+      (p) =>
+        (p.ownerId === owner!.id || normalizePhoneWithZero(p.ownerWhatsapp) === cleanPhone) &&
+        (p.name || '').trim().toLowerCase() === data.pet.name.trim().toLowerCase()
+    );
+
+    if (!pet) {
+      const nextPetId = generateSequentialId('pet', pets.map((p) => p.id));
+      pet = {
+        id: nextPetId,
+        ownerId: owner.id,
+        ownerName: owner.name,
+        ownerWhatsapp: cleanPhone,
+        name: data.pet.name.trim(),
+        type: data.pet.type,
+        breed: data.pet.breed.trim() || 'Mix / Domestik',
+        ageOrDob: data.pet.ageOrDob.trim() || '1 Tahun',
+        sex: data.pet.sex,
+        photoUrl: data.pet.photoUrl,
+        status: data.visit.serviceType === 'Daftar' ? 'Sehat' : 'Perawatan',
+        registeredAt: regTimestamp,
+        informedConsent: consentStatement,
+      };
+      setPets((prev) => [pet!, ...prev]);
+    } else {
+      pet = {
+        ...pet,
+        ownerId: owner.id,
+        ownerName: owner.name,
+        ownerWhatsapp: cleanPhone,
+        informedConsent: consentStatement,
+        ...(data.pet.photoUrl ? { photoUrl: data.pet.photoUrl } : {}),
+      };
+      setPets((prev) =>
+        prev.map((p) =>
+          p.id === pet!.id ? pet! : p
+        )
+      );
+    }
+
+    // 3. Generate Ticket / Queue (hanya bila meminta layanan/pemeriksaan ke klinik)
+    const prefix = data.visit.serviceType === 'Daftar' ? 'REG' : 'A';
+    const ticketNumber = generateNextTicketNumber(prefix, queues.map((q) => q.ticketNumber));
+
+    if (data.visit.serviceType !== 'Daftar') {
+      const nextQueueId = generateSequentialId('q', queues.map((q) => q.id));
+      const newQueue: VisitQueue = {
+        id: nextQueueId,
+        ticketNumber,
+        ownerWhatsapp: cleanPhone,
+        ownerName: owner.name,
+        petId: pet.id,
+        petName: pet.name,
+        petType: pet.type,
+        photoUrl: pet.photoUrl,
+        serviceType: data.visit.serviceType,
+        chiefComplaint: data.visit.chiefComplaint || 'Pemeriksaan rutin / konsultasi dokter',
+        status: 'Menunggu',
+        createdAt: regTimestamp,
+        informedConsent: consentStatement,
+      };
+
+      setQueues((prev) => [...prev, newQueue]);
+      setActivePatientTicket(ticketNumber);
+    }
+
+    return ticketNumber;
+  };
+
+  const callQueue = (queueId: string, room: string = 'Poli 1') => {
+    const queue = queues.find((q) => q.id === queueId);
+    if (!queue) return;
+
+    const timeString = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} WIB`;
+
+    setQueues((prev) =>
+      prev.map((q) =>
+        q.id === queueId
+          ? {
+              ...q,
+              status: 'Di Ruang Poli',
+              calledAt: timeString,
+              assignedDoctor: currentUser?.name || 'drh. Sarah Wijaya',
+            }
+          : q
+      )
+    );
+
+    setCurrentServingTicket(queue.ticketNumber);
+
+    setCallNotification({
+      ticketNumber: queue.ticketNumber,
+      petName: queue.petName,
+      ownerName: queue.ownerName,
+      room,
+      timestamp: timeString,
+    });
+  };
+
+  const completeQueue = (queueId: string) => {
+    const timeString = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} WIB`;
+
+    const target = queues.find((q) => q.id === queueId);
+    if (target && currentServingTicket === target.ticketNumber) {
+      setCurrentServingTicket('-');
+    }
+    if (target && callNotification?.ticketNumber === target.ticketNumber) {
+      setCallNotification(null);
+    }
+
+    setQueues((prev) =>
+      prev.map((q) =>
+        q.id === queueId
+          ? {
+              ...q,
+              status: 'Selesai',
+              completedAt: timeString,
+            }
+          : q
+      )
+    );
+  };
+
+  const deleteQueue = (queueId: string) => {
+    const target = queues.find((q) => q.id === queueId);
+    if (target && currentServingTicket === target.ticketNumber) {
+      setCurrentServingTicket('-');
+    }
+    if (target && callNotification?.ticketNumber === target.ticketNumber) {
+      setCallNotification(null);
+    }
+    setQueues((prev) => prev.filter((q) => q.id !== queueId));
+  };
+
+  const deleteOwner = (ownerId: string) => {
+    const targetOwner = owners.find((o) => o.id === ownerId);
+    if (!targetOwner) return;
+    const cleanPhone = normalizePhoneWithZero(targetOwner.whatsapp);
+
+    // Get all pets belonging to this owner
+    const ownerPets = pets.filter(
+      (p) => p.ownerId === ownerId || (cleanPhone && normalizePhoneWithZero(p.ownerWhatsapp) === cleanPhone)
+    );
+    const ownerPetIds = ownerPets.map((p) => p.id);
+
+    // 1. Remove the owner
+    setOwners((prev) => prev.filter((o) => o.id !== ownerId));
+
+    // 2. Remove all related pets
+    setPets((prev) => prev.filter((p) => !ownerPetIds.includes(p.id)));
+
+    // 3. Cascade remove all SOAP records for these pets
+    setSoapRecords((prev) => prev.filter((s) => !ownerPetIds.includes(s.petId)));
+
+    // 4. Remove from queues
+    setQueues((prev) => prev.filter((q) => !ownerPetIds.includes(q.petId)));
+
+    // 5. Free any occupied inpatient cages
+    setCages((prev) =>
+      prev.map((cage) => {
+        if (cage.petId && ownerPetIds.includes(cage.petId)) {
+          return {
+            ...cage,
+            occupied: false,
+            petId: undefined,
+            petName: undefined,
+            ownerName: undefined,
+            breed: undefined,
+            diagnosis: undefined,
+            checkInDate: undefined,
+          };
+        }
+        return cage;
+      })
+    );
+  };
+
+  const deletePet = (petId: string) => {
+    // 1. Remove the pet
+    setPets((prev) => prev.filter((p) => p.id !== petId));
+
+    // 2. Cascade remove all SOAP records for this pet
+    setSoapRecords((prev) => prev.filter((s) => s.petId !== petId));
+
+    // 3. Remove from queues
+    setQueues((prev) => prev.filter((q) => q.petId !== petId));
+
+    // 4. Free occupied inpatient cage if matched
+    setCages((prev) =>
+      prev.map((cage) => {
+        if (cage.petId === petId) {
+          return {
+            ...cage,
+            occupied: false,
+            petId: undefined,
+            petName: undefined,
+            ownerName: undefined,
+            breed: undefined,
+            diagnosis: undefined,
+            checkInDate: undefined,
+          };
+        }
+        return cage;
+      })
+    );
+  };
+
+  const updateOwner = (ownerId: string, updatedData: Partial<Owner>) => {
+    setOwners((prev) =>
+      prev.map((o) => {
+        if (o.id === ownerId) {
+          const merged = { ...o, ...updatedData };
+          if (updatedData.whatsapp && updatedData.whatsapp !== o.whatsapp) {
+            const oldPhone = normalizePhoneWithZero(o.whatsapp);
+            const newPhone = normalizePhoneWithZero(updatedData.whatsapp);
+            setPets((prevPets) =>
+              prevPets.map((p) => {
+                if (p.ownerId === ownerId || normalizePhoneWithZero(p.ownerWhatsapp) === oldPhone) {
+                  return { ...p, ownerWhatsapp: newPhone, ownerName: merged.name };
+                }
+                return p;
+              })
+            );
+          } else if (updatedData.name && updatedData.name !== o.name) {
+            setPets((prevPets) =>
+              prevPets.map((p) => {
+                if (p.ownerId === ownerId || normalizePhoneWithZero(p.ownerWhatsapp) === normalizePhoneWithZero(o.whatsapp)) {
+                  return { ...p, ownerName: merged.name };
+                }
+                return p;
+              })
+            );
+          }
+          return merged;
+        }
+        return o;
+      })
+    );
+  };
+
+  const updatePet = (petId: string, updatedData: Partial<Pet>) => {
+    setPets((prev) =>
+      prev.map((p) => {
+        if (p.id === petId) {
+          return { ...p, ...updatedData };
+        }
+        return p;
+      })
+    );
+  };
+
+  const deleteSoapRecord = (recordId: string) => {
+    setSoapRecords((prev) => prev.filter((s) => s.id !== recordId));
+  };
+
+  // ==========================================
+  // SOAP MEDICAL RECORD
+  // ==========================================
+
+  const saveSoapRecord = (
+    record: Omit<SoapRecord, 'id' | 'date'>,
+    prescriptionItems: PrescriptionItem[]
+  ) => {
+    const now = new Date();
+    const dateFormatted = getRegistrationTimestamp(now);
+    const nextSoapId = generateSequentialId('soap', soapRecords.map((s) => s.id));
+
+    const newRecord: SoapRecord = {
+      ...record,
+      id: nextSoapId,
+      date: dateFormatted,
+      prescriptions: prescriptionItems,
+    };
+
+    setSoapRecords((prev) => [newRecord, ...prev]);
+
+    // Potong stok otomatis jika ada resep
+    prescriptionItems.forEach((presc) => {
+      setInventory((prev) =>
+        prev.map((item) =>
+          item.id === presc.inventoryItemId
+            ? { ...item, stockQuantity: Math.max(0, item.stockQuantity - presc.quantity) }
+            : item
+        )
+      );
+    });
+
+    // Tandai queue selesai jika berasal dari antrean
+    if (record.queueId) {
+      completeQueue(record.queueId);
+    }
+  };
+
+  // ==========================================
+  // INPATIENT CAGES
+  // ==========================================
+
+  const updateCageStatus = (cageId: string, status: CageStatus, petId?: string) => {
+    const targetId = normalizeCageId(cageId) || cageId;
+    setCages((prev) =>
+      prev.map((c) => {
+        const cNorm = normalizeCageId(c.id, c.label) || c.id;
+        if (cNorm !== targetId && c.id !== targetId) return c;
+        if (status === 'Available' || status === 'Cleaning') {
+          return {
+            ...c,
+            id: targetId,
+            status,
+            petId: undefined,
+            petName: undefined,
+            petType: undefined,
+            ownerName: undefined,
+            ownerWhatsapp: undefined,
+            diagnosis: undefined,
+            admittedAt: undefined,
+            veterinarian: undefined,
+            observations: [],
+          };
+        }
+        return { ...c, id: targetId, status, petId };
+      })
+    );
+  };
+
+  const admitPetToCage = (
+    cageId: string,
+    pet: Pet,
+    owner: Owner,
+    diagnosis: string,
+    vet: string
+  ) => {
+    const targetId = normalizeCageId(cageId) || cageId;
+    const now = new Date();
+    const timeFormatted = `${now.toISOString().split('T')[0]} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    setCages((prev) =>
+      prev.map((c) => {
+        const cNorm = normalizeCageId(c.id, c.label) || c.id;
+        if (cNorm !== targetId && c.id !== targetId) return c;
+        return {
+          ...c,
+          id: targetId, // ID kandang selalu mengikuti nama kandang fisik (A1..B6)
+          status: 'Occupied',
+          petId: pet.id,
+          petName: pet.name,
+          petType: pet.type,
+          ownerName: owner.name,
+          ownerWhatsapp: owner.whatsapp,
+          diagnosis,
+          admittedAt: timeFormatted,
+          veterinarian: vet,
+          observations: [
+            {
+              id: generateSequentialId(
+                'obs',
+                c.observations?.map((o) => o.id) || []
+              ),
+              date: now.toISOString().split('T')[0],
+              time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+              temp: 38.5,
+              appetite: 'Sedang',
+              defecationUrination: 'Normal',
+              medicationGiven: true,
+              cleaned: true,
+              notes: 'Pasien baru masuk rawat inap.',
+              checkedBy: vet,
+            },
+          ],
+        };
+      })
+    );
+
+    // Update status pet jadi Rawat Inap
+    setPets((prev) =>
+      prev.map((p) => (p.id === pet.id ? { ...p, status: 'Rawat Inap' } : p))
+    );
+  };
+
+  const addCageObservation = (cageId: string, obs: Omit<InpatientObservation, 'id'>) => {
+    const targetId = normalizeCageId(cageId) || cageId;
+    const currentCage = cages.find((c) => (normalizeCageId(c.id, c.label) || c.id) === targetId);
+    const newObs: InpatientObservation = {
+      ...obs,
+      id: generateSequentialId(
+        'obs',
+        currentCage?.observations?.map((o) => o.id) || []
+      ),
+    };
+
+    setCages((prev) =>
+      prev.map((c) => {
+        const cNorm = normalizeCageId(c.id, c.label) || c.id;
+        return (cNorm === targetId || c.id === targetId)
+          ? { ...c, observations: [newObs, ...(c.observations || [])] }
+          : c;
+      })
+    );
+  };
+
+  const dischargeCage = (cageId: string) => {
+    const targetId = normalizeCageId(cageId) || cageId;
+    const cage = cages.find((c) => (normalizeCageId(c.id, c.label) || c.id) === targetId);
+    if (cage && cage.petId) {
+      const now = new Date();
+      const dischargeTimeFormatted = `${now.toISOString().split('T')[0]} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+      const historyRecord: InpatientHistoryRecord = {
+        id: generateSequentialId('inpatient_hist', inpatientHistory.map((h) => h.id)),
+        cageId: '',
+        cageLabel: '',
+        petId: cage.petId,
+        petName: cage.petName || 'Pasien',
+        petType: cage.petType || 'Cat',
+        ownerName: cage.ownerName || 'Pemilik',
+        ownerWhatsapp: cage.ownerWhatsapp || '-',
+        diagnosis: cage.diagnosis || 'Perawatan Rawat Inap',
+        admittedAt: cage.admittedAt || dischargeTimeFormatted,
+        dischargedAt: dischargeTimeFormatted,
+        veterinarian: cage.veterinarian || currentUser?.name || 'drh. Sarah Wijaya',
+        observations: cage.observations || [],
+      };
+
+      setInpatientHistory((prev) => [historyRecord, ...prev]);
+
+      // Automatically add a SOAP Record (Rekam Medis) for this completed stay!
+      setSoapRecords((prev) => {
+        const nextSoapId = generateSequentialId('soap', prev.map((s) => s.id));
+        const soapRec: SoapRecord = {
+          id: nextSoapId,
+          petId: cage.petId!,
+          petName: cage.petName || 'Pasien',
+          ownerName: cage.ownerName || 'Pemilik',
+          ownerWhatsapp: cage.ownerWhatsapp || '-',
+          veterinarian: cage.veterinarian || currentUser?.name || 'drh. Sarah Wijaya',
+          date: dischargeTimeFormatted,
+          vitals: {
+            weight: 0,
+            temperature: cage.observations?.[0]?.temp || 38.5,
+            heartRate: 0,
+            respiratoryRate: 0,
+          },
+          soap: {
+            subjective: `Rawat Inap Selesai.\nMasuk: ${cage.admittedAt}\nKeluar: ${dischargeTimeFormatted}`,
+            objective: `Pasien dipulangkan dalam kondisi stabil. Log observasi rawat inap memiliki ${cage.observations?.length || 0} entri.`,
+            assessment: `Selesai Rawat Inap - Diagnosis: ${cage.diagnosis}`,
+            plan: `Edukasi owner mengenai pemeliharaan mandiri, pemulihan pasca tindakan medis, dan terapi rawat jalan di rumah.`,
+          },
+          prescriptions: [],
+          serviceFee: 0,
+        };
+        return [soapRec, ...prev];
+      });
+
+      setPets((prev) =>
+        prev.map((p) => (p.id === cage.petId ? { ...p, status: 'Sehat' } : p))
+      );
+    }
+    updateCageStatus(cageId, 'Cleaning');
+  };
+
+  // ==========================================
+  // INVENTORY & STOCK
+  // ==========================================
+
+  const restockItem = (itemId: string, addedQuantity: number) => {
+    const today = new Date().toISOString().split('T')[0];
+    setInventory((prev) =>
+      prev.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              stockQuantity: item.stockQuantity + addedQuantity,
+              lastRestocked: today,
+            }
+          : item
+      )
+    );
+  };
+
+  const addInventoryItem = (item: Omit<InventoryItem, 'id' | 'lastRestocked'>) => {
+    const today = new Date().toISOString().split('T')[0];
+    const nextInvId = generateSequentialId('inv', inventory.map((i) => i.id));
+    const newItem: InventoryItem = {
+      ...item,
+      id: nextInvId,
+      lastRestocked: today,
+    };
+    setInventory((prev) => [newItem, ...prev]);
+  };
+
+  // ==========================================
+  // BOOKING APPOINTMENTS
+  // ==========================================
+
+  const addBooking = (booking: Omit<BookingAppointment, 'id'>) => {
+    const nextBkId = generateSequentialId('bk', bookings.map((b) => b.id));
+    const newBooking: BookingAppointment = {
+      ...booking,
+      ownerWhatsapp: normalizePhoneWithZero(booking.ownerWhatsapp),
+      id: nextBkId,
+    };
+    setBookings((prev) => [newBooking, ...prev]);
+  };
+
+  const updateBookingStatus = (id: string, status: BookingAppointment['status']) => {
+    setBookings((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, status } : b))
+    );
+  };
+
+  // ==========================================
+  // AUTH & SESSION & STAFF MANAGEMENT
+  // ==========================================
+
+  const addStaff = (newStaff: Omit<StaffUser, 'id'>): { success: boolean; message: string } => {
+    const usernameClean = newStaff.username.trim().toLowerCase();
+    if (!usernameClean) {
+      return { success: false, message: 'Username tidak boleh kosong.' };
+    }
+    if (staffList.some((s) => s.username.toLowerCase() === usernameClean)) {
+      return { success: false, message: `Username "${newStaff.username}" sudah terdaftar.` };
+    }
+    const nextStaffId = generateSequentialId('staff', staffList.map((s) => s.id));
+    const staffMember: StaffUser = {
+      ...newStaff,
+      id: nextStaffId,
+      username: usernameClean,
+      password: newStaff.password?.trim() || 'admin',
+    };
+    const nextList = [...staffList, staffMember];
+    setStaffList(nextList);
+
+    // Push to Google Spreadsheet if connected
+    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
+      pushTableToSpreadsheet(spreadsheetConfig.webAppUrl, 'staff', nextList);
+    }
+    return { success: true, message: `Admin / Staf ${newStaff.name} berhasil ditambahkan.` };
+  };
+
+  const deleteStaff = (id: string): { success: boolean; message: string } => {
+    if (staffList.length <= 1) {
+      return { success: false, message: 'Minimal harus ada 1 akun admin / staf terdaftar di sistem.' };
+    }
+    const target = staffList.find((s) => s.id === id);
+    if (!target) {
+      return { success: false, message: 'Data admin tidak ditemukan.' };
+    }
+    if (currentUser?.id === id) {
+      return { success: false, message: 'Anda tidak dapat menghapus akun yang sedang aktif login.' };
+    }
+    const nextList = staffList.filter((s) => s.id !== id);
+    setStaffList(nextList);
+
+    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
+      pushTableToSpreadsheet(spreadsheetConfig.webAppUrl, 'staff', nextList);
+    }
+    return { success: true, message: `Akun ${target.name} berhasil dihapus.` };
+  };
+
+  const updateStaffPassword = (id: string, newPassword: string): { success: boolean; message: string } => {
+    const trimmed = newPassword.trim();
+    if (!trimmed) {
+      return { success: false, message: 'Password baru tidak boleh kosong.' };
+    }
+    if (trimmed.length < 3) {
+      return { success: false, message: 'Password minimal harus 3 karakter.' };
+    }
+    const target = staffList.find((s) => s.id === id);
+    if (!target) {
+      return { success: false, message: 'Data admin tidak ditemukan.' };
+    }
+    const updatedStaff: StaffUser = {
+      ...target,
+      password: trimmed,
+    };
+    const nextList = staffList.map((s) => (s.id === id ? updatedStaff : s));
+    setStaffList(nextList);
+
+    if (currentUser?.id === id) {
+      setCurrentUser(updatedStaff);
+    }
+
+    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
+      pushTableToSpreadsheet(spreadsheetConfig.webAppUrl, 'staff', nextList);
+    }
+    return { success: true, message: `Password untuk ${target.name} berhasil diperbarui.` };
+  };
+
+  const loginStaff = (username: string, password: string): { success: boolean; message: string } => {
+    const cleanUser = username.trim().toLowerCase();
+    const cleanPass = password.trim();
+
+    if (!cleanUser) {
+      return { success: false, message: 'Username wajib diisi.' };
+    }
+    if (!cleanPass) {
+      return { success: false, message: 'Kata sandi wajib diisi.' };
+    }
+
+    let found = staffList.find((s) => s.username.toLowerCase() === cleanUser);
+    if (!found) {
+      found = INITIAL_STAFF.find((s) => s.username.toLowerCase() === cleanUser);
+    }
+    if (!found) {
+      return { success: false, message: 'Username tidak terdaftar di sistem klinik.' };
+    }
+
+    // Periksa password sesuai yang tersimpan di data staf/pengaturan (default 'admin' jika belum disetel)
+    const expectedPassword = String(found.password ?? 'admin').trim();
+    if (cleanPass !== expectedPassword) {
+      return { success: false, message: 'Kata sandi salah. Silakan periksa kembali kata sandi Anda.' };
+    }
+
+    setCurrentUser(found);
+    return { success: true, message: 'Login berhasil.' };
+  };
+
+  const logoutStaff = () => {
+    setCurrentUser(null);
+  };
+
+  const setTrackedTicket = (ticket: string): boolean => {
+    const clean = ticket.trim().toUpperCase();
+    const found = queues.find((q) => q.ticketNumber.toUpperCase() === clean);
+    if (found) {
+      setActivePatientTicket(found.ticketNumber);
+      return true;
+    }
+    return false;
+  };
+
+  const trackByPhone = (phone: string | number): boolean => {
+    const cleanPhone = normalizePhoneWithZero(phone);
+    if (!cleanPhone) return false;
+    // Hanya cari antrean yang AKTIF (Menunggu / Di Ruang Poli). Pasien yang sudah selesai tidak muncul lagi dalam antrean aktif.
+    const activeQueues = queues.filter(
+      (q) =>
+        normalizePhoneWithZero(q.ownerWhatsapp) === cleanPhone &&
+        q.status !== 'Selesai' &&
+        q.status !== 'Dibatalkan'
+    );
+    if (activeQueues.length > 0) {
+      const latest = activeQueues[activeQueues.length - 1];
+      setActivePatientTicket(latest.ticketNumber);
+      return true;
+    }
+    return false;
+  };
+
+  const clearPatientSession = () => {
+    setActivePatientTicket(null);
+  };
+
+  const dismissCallNotification = () => {
+    setCallNotification(null);
+  };
+
+  const getPetById = (id: string) => pets.find((p) => p.id === id);
+  const getOwnerByPhone = (phone: string | number) => {
+    const cleanTarget = normalizePhoneWithZero(phone);
+    if (!cleanTarget) return undefined;
+    return owners.find((o) => normalizePhoneWithZero(o.whatsapp) === cleanTarget);
+  };
+  const getPetsByOwnerPhone = (phone: string | number, ownerId?: string) => {
+    const cleanTarget = normalizePhoneWithZero(phone);
+    const targetDigits = String(phone ?? '').replace(/\D/g, '');
+    return pets.filter((p) => {
+      if (ownerId && p.ownerId && p.ownerId === ownerId) return true;
+      if (cleanTarget && normalizePhoneWithZero(p.ownerWhatsapp) === cleanTarget) return true;
+      if (targetDigits && String(p.ownerWhatsapp ?? '').replace(/\D/g, '') === targetDigits) return true;
+      return false;
+    });
+  };
+
+  const addFeedback = (item: Omit<CustomerFeedback, 'id' | 'submittedAt'>) => {
+    const newId = generateSequentialId('fb', feedbacks.map((f) => f.id));
+    const now = new Date();
+    const datePart = now.toLocaleDateString('id-ID', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    const timePart = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const submittedAt = `${datePart} ${timePart} WIB`;
+
+    const newRecord: CustomerFeedback = {
+      ...item,
+      ownerWhatsapp: item.ownerWhatsapp ? normalizePhoneWithZero(item.ownerWhatsapp) : undefined,
+      id: newId,
+      submittedAt,
+    };
+
+    setFeedbacks((prev) => [newRecord, ...prev]);
+
+    // Push record ke Google Spreadsheet secara real-time
+    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
+      pushSingleRecordToSpreadsheet(spreadsheetConfig.webAppUrl, 'feedbacks', newRecord);
+    }
+  };
+
+  const deleteFeedback = (id: string) => {
+    setFeedbacks((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  return (
+    <ClinicContext.Provider
+      value={{
+        owners,
+        pets,
+        queues,
+        inventory,
+        cages,
+        inpatientHistory,
+        soapRecords,
+        bookings,
+        feedbacks,
+        staffList,
+        currentUser,
+        currentServingTicket,
+        activePatientTicket,
+        callNotification,
+        spreadsheetConfig,
+        syncStatus,
+        lastSyncMessage,
+        connectSpreadsheet,
+        disconnectSpreadsheet,
+        updateSpreadsheetConfig,
+        syncToSpreadsheet,
+        syncFromSpreadsheet,
+        importDatabase,
+        clearAllData,
+        registerPatient,
+        callQueue,
+        completeQueue,
+        deleteQueue,
+        deleteOwner,
+        deletePet,
+        deleteSoapRecord,
+        saveSoapRecord,
+        updateCageStatus,
+        addCageObservation,
+        admitPetToCage,
+        dischargeCage,
+        restockItem,
+        addInventoryItem,
+        addBooking,
+        updateBookingStatus,
+        addFeedback,
+        deleteFeedback,
+        addStaff,
+        deleteStaff,
+        updateStaffPassword,
+        loginStaff,
+        logoutStaff,
+        setTrackedTicket,
+        trackByPhone,
+        clearPatientSession,
+        dismissCallNotification,
+        getPetById,
+        getOwnerByPhone,
+        getPetsByOwnerPhone,
+        resetToInitialData,
+        updateOwner,
+        updatePet,
+        sanitizeAllExistingDates,
+      }}
+    >
+      {children}
+    </ClinicContext.Provider>
+  );
+};
+
+export const useClinic = () => {
+  const context = useContext(ClinicContext);
+  if (!context) {
+    throw new Error('useClinic must be used within a ClinicProvider');
+  }
+  return context;
+};
