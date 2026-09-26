@@ -368,9 +368,29 @@ export async function pullTablesBatchFromSpreadsheet(
 
     if (!res.ok) return { success: false, message: `Gagal mengambil batch tabel (HTTP ${res.status}).` };
 
-    const json = await res.json();
+    // Google Apps Script may return the redirected googleusercontent response
+    // with a generic MIME type (for example application/binary). Do not rely on
+    // Response.json() or the MIME type here; decode the body explicitly as UTF-8
+    // and parse JSON ourselves.
+    const rawBody = await res.text();
+    const normalizedBody = rawBody.replace(/^\\uFEFF/, '').trim();
+
+    let json: any;
+    try {
+      json = JSON.parse(normalizedBody);
+    } catch (parseError: any) {
+      const contentType = res.headers.get('content-type') || 'unknown';
+      return {
+        success: false,
+        message: `Batch response JSON tidak dapat diparse (content-type: ${contentType}). ${parseError?.message || ''}`.trim(),
+      };
+    }
+
     if (json?.status !== 'success' || !json?.data || typeof json.data !== 'object') {
-      return { success: false, message: json?.message || 'Format batch data dari Google Apps Script tidak sesuai.' };
+      return {
+        success: false,
+        message: json?.message || 'Format batch data dari Google Apps Script tidak sesuai.',
+      };
     }
 
     const decryptedData = decryptDatabaseFromSpreadsheet(json.data);
