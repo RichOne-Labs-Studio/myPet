@@ -36,6 +36,7 @@ import {
   SpreadsheetDatabaseSchema,
   testSpreadsheetConnection,
   pullFullDatabaseFromSpreadsheet,
+  pullTablesBatchFromSpreadsheet,
   pushFullDatabaseToSpreadsheet,
   pushTableToSpreadsheet,
   pushSingleRecordToSpreadsheet,
@@ -716,6 +717,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Browser tidak memuat seluruh tabel saat dataset besar.
   const [isLargeDataMode, setIsLargeDataMode] = useState(false);
   const LARGE_DATA_THRESHOLD = 20000;
+  // Start the lightweight startup working set before the browser approaches
+  // the full large-data threshold. This keeps growing datasets from falling
+  // back to fetchAll while still preserving the existing large-data threshold.
+  const BATCH_STARTUP_THRESHOLD = 16000;
 
   // GitHub Pages is the production static host. On static hosting, Google Sheets
   // via Apps Script is the single source of truth for READ operations.
@@ -723,6 +728,8 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Versi backend lokal untuk mendeteksi pembaruan data secara otomatis
   const localBackendVersionRef = useRef<number>(0);
+  // Prevent duplicate initial bootstrap requests when React development StrictMode mounts the provider twice.
+  const initialLoadStartedRef = useRef(false);
 
   // 1. Initial Load
   // Small dataset: gunakan cache + full sync seperti sebelumnya.
@@ -798,30 +805,55 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try {
         const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
         const total = totalFromCounts(ping.counts);
-        if (total >= LARGE_DATA_THRESHOLD) {
+
+        // Establish the polling baseline from the same startup ping.
+        // Without this, the first 10-second fallback poll sees a null baseline
+        // and immediately triggers a second batch startup sync even when nothing changed.
+        if (ping.success && ping.counts) {
+          pollCountsRef.current = ping.counts;
+        }
+
+        // Stage 7.2 runtime guard:
+        // Do not rely only on ping counts to decide whether Batch Read is needed.
+        // Some Apps Script deployments can return incomplete/stale count metadata.
+        // Probe the lightweight batch endpoint first; its totals are authoritative
+        // for the tables returned by fetchTables.
+        const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
+          'owners', 'pets', 'queues', 'soapRecords', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
+        ];
+
+        if (total >= BATCH_STARTUP_THRESHOLD) {
           setIsLargeDataMode(true);
-          const tables: Array<keyof SpreadsheetDatabaseSchema> = [
-            'owners', 'pets', 'queues', 'soapRecords', 'cages',
-            'inventory', 'bookings', 'staff', 'feedbacks'
-          ];
-          const pages = await Promise.all(
-            tables.map((table) =>
-              import('../database/spreadsheetDb').then(({ pullTableFromSpreadsheet }) =>
-                pullTableFromSpreadsheet(spreadsheetConfig.webAppUrl, table, 0, 100)
-              )
-            )
-          );
-          const data: Partial<SpreadsheetDatabaseSchema> = {};
-          tables.forEach((table, index) => {
-            const result: any = pages[index];
-            if (result?.success) (data as any)[table] = result.data || [];
-          });
+        }
+
+        const batchLimits = criticalTables.reduce<Partial<Record<keyof SpreadsheetDatabaseSchema, number>>>((acc, table) => {
+          const count = ping.counts?.[String(table)];
+          if (typeof count === 'number') acc[table] = count;
+          return acc;
+        }, {});
+
+        const batch = await pullTablesBatchFromSpreadsheet(
+          spreadsheetConfig.webAppUrl,
+          criticalTables,
+          100,
+          batchLimits
+        );
+
+        if (batch.success && batch.data) {
+          // Stage 7.2: a successful batch response is the startup working set.
+          // Do not fall back to fetchAll based on counts from only the critical
+          // tables; large tables such as soapRecords are intentionally hydrated
+          // progressively in later stages.
+          setIsLargeDataMode(true);
           hasInitialSyncedRef.current = true;
-          importDatabase(data);
+          importDatabase(batch.data);
           setSyncStatus('connected');
           return true;
         }
 
+        // Only fall back to the legacy full read when the batch endpoint itself
+        // fails. This preserves compatibility without reintroducing fetchAll on
+        // a successful Stage 7.2 deployment.
         const full = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
         if (full.success && full.data) {
           hasInitialSyncedRef.current = true;
@@ -836,6 +868,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     async function loadInitial() {
+      // React StrictMode can invoke effects twice during development. Only the first invocation may start the authoritative startup read sequence.
+      if (initialLoadStartedRef.current) return;
+      initialLoadStartedRef.current = true;
+
       // PRODUCTION STATIC HOST: read Google Sheets first and directly.
       // Local IndexedDB/cache must never win over the latest Spreadsheet data.
       if (isStaticHost) {
@@ -992,7 +1028,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     };
 
-    // Polling berkala (5s jika ada backend, atau 30s jika static)
+    // Polling berkala untuk mendeteksi perubahan jumlah baris tanpa full fetch.
     const intervalId = setInterval(poll, 10000);
     return () => clearInterval(intervalId);
   }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl, isLargeDataMode]);
@@ -1151,16 +1187,45 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Google Sheets is the production source of truth.
     if (isStaticHost && spreadsheetConfig.webAppUrl) {
       try {
-        const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
-        if (directRes.success && directRes.data) {
-          hasInitialSyncedRef.current = true;
-          importDatabase(directRes.data);
-          const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
-          setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
-          setSyncStatus('connected');
-          const msg = 'Data terbaru berhasil dibaca langsung dari Google Sheets pada ' + nowStr + ' WIB';
-          if (!silent) setLastSyncMessage(msg);
-          return { success: true, message: msg };
+        if (isLargeDataMode) {
+          const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
+            'owners', 'pets', 'queues', 'soapRecords', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
+          ];
+          const knownCounts = pollCountsRef.current || {};
+          const batchLimits = criticalTables.reduce<Partial<Record<keyof SpreadsheetDatabaseSchema, number>>>((acc, table) => {
+            const count = knownCounts[String(table)];
+            if (typeof count === 'number') acc[table] = count;
+            return acc;
+          }, {});
+
+          const batchRes = await pullTablesBatchFromSpreadsheet(
+            spreadsheetConfig.webAppUrl,
+            criticalTables,
+            100,
+            batchLimits
+          );
+          if (batchRes.success && batchRes.data) {
+            hasInitialSyncedRef.current = true;
+            importDatabase(batchRes.data);
+            const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+            setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+            setSyncStatus('connected');
+            const msg = 'Working set terbaru berhasil dibaca dari Google Sheets pada ' + nowStr + ' WIB';
+            if (!silent) setLastSyncMessage(msg);
+            return { success: true, message: msg };
+          }
+        } else {
+          const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
+          if (directRes.success && directRes.data) {
+            hasInitialSyncedRef.current = true;
+            importDatabase(directRes.data);
+            const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+            setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+            setSyncStatus('connected');
+            const msg = 'Data terbaru berhasil dibaca langsung dari Google Sheets pada ' + nowStr + ' WIB';
+            if (!silent) setLastSyncMessage(msg);
+            return { success: true, message: msg };
+          }
         }
       } catch (err) {
         console.warn('Pembacaan langsung Google Sheets gagal:', err);

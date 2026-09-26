@@ -345,6 +345,78 @@ export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promis
  * Tarik data spesifik satu tabel dengan paging / chunking opsional
  * Menghindari beban berlebih saat data per sheet mencapai puluhan ribu baris.
  */
+export async function pullTablesBatchFromSpreadsheet(
+  webAppUrl: string,
+  tables: Array<keyof SpreadsheetDatabaseSchema>,
+  limit: number = 100,
+  tableLimits: Partial<Record<keyof SpreadsheetDatabaseSchema, number>> = {}
+): Promise<{ success: boolean; message: string; data?: Partial<SpreadsheetDatabaseSchema>; totals?: Record<string, number> }> {
+  if (!webAppUrl || !webAppUrl.trim()) {
+    return { success: false, message: 'URL Google Apps Script belum dikonfigurasi.' };
+  }
+
+  const cleanUrl = webAppUrl.trim();
+  const tableList = tables.map(String).join(',');
+  const safeDefaultLimit = Math.min(100, Math.max(1, limit));
+  const normalizedTableLimits = Object.fromEntries(
+    Object.entries(tableLimits).map(([table, value]) => [
+      table,
+      Math.max(0, Math.min(10000, Number(value) || 0))
+    ])
+  );
+  const limitsParam = Object.keys(normalizedTableLimits).length > 0
+    ? `&limits=${encodeURIComponent(JSON.stringify(normalizedTableLimits))}`
+    : '';
+  const fetchUrl = cleanUrl.includes('?')
+    ? `${cleanUrl}&action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${safeDefaultLimit}${limitsParam}&_t=${Date.now()}`
+    : `${cleanUrl}?action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${safeDefaultLimit}${limitsParam}&_t=${Date.now()}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const res = await fetch(fetchUrl, { method: 'GET', cache: 'no-store', signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) return { success: false, message: `Gagal mengambil batch tabel (HTTP ${res.status}).` };
+
+    // Google Apps Script may return the redirected googleusercontent response
+    // with a generic MIME type (for example application/binary). Do not rely on
+    // Response.json() or the MIME type here; decode the body explicitly as UTF-8
+    // and parse JSON ourselves.
+    const rawBody = await res.text();
+    const normalizedBody = rawBody.replace(/^\\uFEFF/, '').trim();
+
+    let json: any;
+    try {
+      json = JSON.parse(normalizedBody);
+    } catch (parseError: any) {
+      const contentType = res.headers.get('content-type') || 'unknown';
+      return {
+        success: false,
+        message: `Batch response JSON tidak dapat diparse (content-type: ${contentType}). ${parseError?.message || ''}`.trim(),
+      };
+    }
+
+    if (json?.status !== 'success' || !json?.data || typeof json.data !== 'object') {
+      return {
+        success: false,
+        message: json?.message || 'Format batch data dari Google Apps Script tidak sesuai.',
+      };
+    }
+
+    const decryptedData = decryptDatabaseFromSpreadsheet(json.data);
+    return {
+      success: true,
+      message: 'Batch tabel berhasil ditarik dari Google Spreadsheet.',
+      data: decryptedData,
+      totals: json.totals || {},
+    };
+  } catch (err: any) {
+    if (err?.name === 'AbortError') return { success: false, message: 'Batch fetch timeout setelah 60 detik.' };
+    return { success: false, message: err?.message || 'Gagal mengambil batch tabel.' };
+  }
+}
+
 export async function queryTableFromSpreadsheet(
   webAppUrl: string,
   table: keyof SpreadsheetDatabaseSchema,
@@ -796,7 +868,7 @@ function doGet(e) {
     return createJsonResponse({
       status: 'success',
       stage: '6.2',
-      deploymentMarker: 'STAGE-6.2-MONITORING',
+      deploymentMarker: 'STAGE-7.2-BATCH-READ-PER-TABLE-LIMIT',
       queryResultCache: false,
       countCache: true,
       textFinderUpsert: true,
@@ -854,6 +926,43 @@ function doGet(e) {
       message: 'Vier Pet Care Google Sheets Database Online & Terhubung',
       tables: Object.values(SHEET_NAMES),
       counts: counts,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (action === 'fetchTables' && e && e.parameter && e.parameter.tables) {
+    const requestedTables = String(e.parameter.tables || '')
+      .split(',')
+      .map(function(table) { return table.trim(); })
+      .filter(function(table) { return !!SHEET_NAMES[table]; });
+    const defaultLimit = Math.max(1, Math.min(10000, parseInt(e.parameter.limit || '100', 10) || 100));
+    let perTableLimits = {};
+    if (e.parameter.limits) {
+      try {
+        const parsedLimits = JSON.parse(e.parameter.limits);
+        if (parsedLimits && typeof parsedLimits === 'object') perTableLimits = parsedLimits;
+      } catch (err) {}
+    }
+
+    const batchData = {};
+    const totals = {};
+    requestedTables.forEach(function(table) {
+      const requestedLimit = Number(perTableLimits[table]);
+      const tableLimit = Number.isFinite(requestedLimit)
+        ? Math.max(0, Math.min(10000, Math.floor(requestedLimit)))
+        : defaultLimit;
+      const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+      const total = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+      totals[table] = total;
+      batchData[table] = readTableData(ss, table, 0, tableLimit || undefined);
+    });
+
+    return createJsonResponse({
+      status: 'success',
+      stage: '7.2',
+      deploymentMarker: 'STAGE-7.2-BATCH-READ-PER-TABLE-LIMIT',
+      data: batchData,
+      totals: totals,
       timestamp: new Date().toISOString()
     });
   }
