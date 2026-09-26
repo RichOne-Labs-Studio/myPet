@@ -370,6 +370,17 @@ function loadStored<T>(key: string, fallback: T): T {
 }
 
 /**
+ * Static browser hosts (GitHub Pages / local preview) use Google Sheets as the
+ * authoritative startup source. Avoid parsing large persisted datasets before
+ * the authoritative remote read completes.
+ */
+function isStaticBrowserHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return host.endsWith('.github.io') || host === 'localhost' || host === '127.0.0.1';
+}
+
+/**
  * Menghasilkan ID deterministik (stabil) dari kombinasi field yang ada di baris data.
  * Dipakai sebagai fallback saat kolom 'id' kosong di Google Sheets (mis. data diketik manual),
  * supaya ID tidak berubah-ubah setiap kali data ditarik ulang (Date.now() akan selalu beda tiap fetch).
@@ -652,10 +663,12 @@ function sanitizeSoapRecord(s: any): SoapRecord | null {
 
 export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [owners, setOwners] = useState<Owner[]>(() => {
+    if (isStaticBrowserHost()) return [];
     const raw = loadStored(STORAGE_KEYS.OWNERS, INITIAL_OWNERS);
     return Array.isArray(raw) ? (raw.map(sanitizeOwner).filter((x): x is Owner => x !== null)) : INITIAL_OWNERS;
   });
   const [pets, setPets] = useState<Pet[]>(() => {
+    if (isStaticBrowserHost()) return [];
     const raw = loadStored(STORAGE_KEYS.PETS, INITIAL_PETS);
     return Array.isArray(raw) ? raw.map((p) => sanitizePet(p)).filter((x): x is Pet => x !== null) : INITIAL_PETS;
   });
@@ -667,6 +680,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [cages, setCages] = useState<InpatientCage[]>(() => sanitizeCagesList(loadStored(STORAGE_KEYS.CAGES, INITIAL_CAGES)));
   const [inpatientHistory, setInpatientHistory] = useState<InpatientHistoryRecord[]>(() => loadStored(STORAGE_KEYS.INPATIENT_HISTORY, []));
   const [soapRecords, setSoapRecords] = useState<SoapRecord[]>(() => {
+    if (isStaticBrowserHost()) return [];
     const raw = loadStored(STORAGE_KEYS.SOAP, INITIAL_SOAP_RECORDS);
     return Array.isArray(raw) ? (raw.map(sanitizeSoapRecord).filter((x): x is SoapRecord => x !== null)) : INITIAL_SOAP_RECORDS;
   });
@@ -705,11 +719,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // GitHub Pages is the production static host. On static hosting, Google Sheets
   // via Apps Script is the single source of truth for READ operations.
-  const isStaticHost =
-    typeof window !== 'undefined' &&
-    (window.location.hostname.endsWith('.github.io') ||
-      window.location.hostname === 'localhost' ||
-      window.location.hostname === '127.0.0.1');
+  const isStaticHost = isStaticBrowserHost();
 
   // Versi backend lokal untuk mendeteksi pembaruan data secara otomatis
   const localBackendVersionRef = useRef<number>(0);
