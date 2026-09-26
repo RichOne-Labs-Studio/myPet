@@ -685,6 +685,129 @@ const TABLE_HEADERS = {
   feedbacks: ['id', 'ticketNumber', 'ownerName', 'ownerWhatsapp', 'petName', 'serviceType', 'satisfactionRating', 'satisfactionLabel', 'category', 'feedbackText', 'submittedAt']
 };
 
+// ==========================================
+// STAGE 6 - GOOGLE SHEETS ACCESS OPTIMIZATION
+// ==========================================
+const CACHE_TTL_SECONDS = 120;
+const QUERY_CACHE_TTL_SECONDS = 60;
+const COUNTS_CACHE_KEY = 'mypet_counts_v1';
+const QUERY_CACHE_VERSION_KEY = 'mypet_query_cache_version_v1';
+const QUERY_CACHE_MAX_BYTES = 90000;
+
+function getQueryCacheVersion() {
+  const props = PropertiesService.getScriptProperties();
+  return props.getProperty(QUERY_CACHE_VERSION_KEY) || '1';
+}
+
+function invalidateQueryCache() {
+  const props = PropertiesService.getScriptProperties();
+  const current = Number(props.getProperty(QUERY_CACHE_VERSION_KEY) || '1');
+  props.setProperty(QUERY_CACHE_VERSION_KEY, String(current + 1));
+}
+
+function countTableRowsFast(ss, table) {
+  const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+
+  // IDs are stored in column A. Count non-empty IDs without materializing
+  // the complete table into objects.
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues();
+  let count = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i][0] !== '' && values[i][0] !== null && values[i][0] !== undefined) count++;
+  }
+  return count;
+}
+
+function calculateCounts(ss) {
+  const counts = {};
+  Object.keys(SHEET_NAMES).forEach(table => {
+    counts[table] = countTableRowsFast(ss, table);
+  });
+  return counts;
+}
+
+function getCachedCounts(ss) {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(COUNTS_CACHE_KEY);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) {}
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  const persisted = props.getProperty(COUNTS_CACHE_KEY);
+  if (persisted) {
+    try {
+      const parsed = JSON.parse(persisted);
+      cache.put(COUNTS_CACHE_KEY, persisted, CACHE_TTL_SECONDS);
+      return parsed;
+    } catch (e) {}
+  }
+
+  const counts = calculateCounts(ss);
+  const serialized = JSON.stringify(counts);
+  cache.put(COUNTS_CACHE_KEY, serialized, CACHE_TTL_SECONDS);
+  props.setProperty(COUNTS_CACHE_KEY, serialized);
+  return counts;
+}
+
+function refreshCountsCache(ss) {
+  const counts = calculateCounts(ss);
+  const serialized = JSON.stringify(counts);
+  CacheService.getScriptCache().put(COUNTS_CACHE_KEY, serialized, CACHE_TTL_SECONDS);
+  PropertiesService.getScriptProperties().setProperty(COUNTS_CACHE_KEY, serialized);
+  return counts;
+}
+
+function invalidateCountsCache() {
+  CacheService.getScriptCache().remove(COUNTS_CACHE_KEY);
+  PropertiesService.getScriptProperties().deleteProperty(COUNTS_CACHE_KEY);
+}
+
+function makeQueryCacheKey(table, offset, limit, filters) {
+  const raw = [
+    getQueryCacheVersion(),
+    table,
+    String(offset || 0),
+    String(limit || ''),
+    String(filters && filters.search || '').trim().toLowerCase(),
+    String(filters && filters.species || '').trim().toLowerCase(),
+    String(filters && filters.status || '').trim().toLowerCase()
+  ].join('|');
+
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    raw,
+    Utilities.Charset.UTF_8
+  );
+
+  return 'q_' + digest.map(function(b) {
+    const n = b < 0 ? b + 256 : b;
+    return ('0' + n.toString(16)).slice(-2);
+  }).join('');
+}
+
+function queryTableDataCached(ss, table, offset, limit, filters) {
+  const cache = CacheService.getScriptCache();
+  const key = makeQueryCacheKey(table, offset, limit, filters);
+  const cached = cache.get(key);
+
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) {}
+  }
+
+  const result = queryTableDataUncached(ss, table, offset, limit, filters);
+  try {
+    const serialized = JSON.stringify(result);
+    // CacheService has a per-value size limit; stay below it.
+    if (serialized.length <= QUERY_CACHE_MAX_BYTES) {
+      cache.put(key, serialized, QUERY_CACHE_TTL_SECONDS);
+    }
+  } catch (e) {}
+
+  return result;
+}
+
 function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheetsExist(ss);
@@ -692,24 +815,8 @@ function doGet(e) {
   const action = e && e.parameter && e.parameter.action ? e.parameter.action : 'ping';
 
   if (action === 'ping') {
-    const counts = {};
-    Object.keys(SHEET_NAMES).forEach(table => {
-      const sheet = ss.getSheetByName(SHEET_NAMES[table]);
-      if (!sheet || sheet.getLastRow() < 2) {
-        counts[table] = 0;
-      } else {
-        // Hitung baris yang benar-benar ada datanya (bukan baris kosong/terhapus)
-        const lastRow = sheet.getLastRow();
-        const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-        let validRows = 0;
-        for (let i = 0; i < ids.length; i++) {
-          if (ids[i][0] !== '' && ids[i][0] !== null && ids[i][0] !== undefined) {
-            validRows++;
-          }
-        }
-        counts[table] = validRows;
-      }
-    });
+    // Stage 6: gunakan cache untuk menghindari scan 9 kolom ID pada setiap ping.
+    const counts = getCachedCounts(ss);
 
     return createJsonResponse({
       status: 'success',
@@ -742,7 +849,7 @@ function doGet(e) {
       species: e.parameter.species || '',
       status: e.parameter.status || ''
     };
-    const result = queryTableData(ss, table, offset, limit, filters);
+    const result = queryTableDataCached(ss, table, offset, limit, filters);
 
     return createJsonResponse({
       status: 'success',
@@ -792,6 +899,11 @@ function doPost(e) {
         }
       });
 
+      // Data berubah: naikkan versi query cache dan refresh count cache sekali.
+      invalidateQueryCache();
+      invalidateCountsCache();
+      refreshCountsCache(ss);
+
       return createJsonResponse({
         status: 'success',
         message: 'Data berhasil disinkronkan ke Google Spreadsheet.',
@@ -801,10 +913,26 @@ function doPost(e) {
 
     if (action === 'upsert' && payload.table && payload.record) {
       upsertRecord(ss, payload.table, payload.record);
+      invalidateQueryCache();
+      invalidateCountsCache();
+      refreshCountsCache(ss);
       return createJsonResponse({
         status: 'success',
         message: 'Record berhasil diperbarui di sheet: ' + payload.table,
         timestamp: new Date().toISOString()
+      });
+    }
+
+    if (action === 'delete' && payload.table && payload.id) {
+      const deleted = deleteRecord(ss, payload.table, payload.id);
+      if (deleted) {
+        invalidateQueryCache();
+        invalidateCountsCache();
+        refreshCountsCache(ss);
+      }
+      return createJsonResponse({
+        status: deleted ? 'success' : 'error',
+        message: deleted ? 'Record berhasil dihapus dari sheet: ' + payload.table : 'Record tidak ditemukan.'
       });
     }
 
@@ -894,7 +1022,7 @@ function readTableData(ss, table, offset, limit) {
   return results;
 }
 
-function queryTableData(ss, table, offset, limit, filters) {
+function queryTableDataUncached(ss, table, offset, limit, filters) {
   const sheetName = SHEET_NAMES[table];
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet || sheet.getLastRow() < 2) return { data: [], total: 0 };
@@ -2018,14 +2146,38 @@ function upsertRecord(ss, table, record) {
     return;
   }
 
-  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues().map(r => String(r[0]));
-  const existingIndex = ids.indexOf(String(record.id));
+  // Stage 6: TextFinder mencari ID langsung di kolom A.
+  // Tidak perlu memuat seluruh kolom ID ke array JavaScript.
+  const idRange = sheet.getRange(2, 1, lastRow - 1, 1);
+  const found = idRange.createTextFinder(String(record.id))
+    .matchEntireCell(true)
+    .matchCase(true)
+    .useRegularExpression(false)
+    .findNext();
 
-  if (existingIndex !== -1) {
-    sheet.getRange(existingIndex + 2, 1, 1, headers.length).setValues([rowValues]);
+  if (found) {
+    sheet.getRange(found.getRow(), 1, 1, headers.length).setValues([rowValues]);
   } else {
     sheet.appendRow(rowValues);
   }
+}
+
+function deleteRecord(ss, table, id) {
+  if (!table || !id || !SHEET_NAMES[table]) return false;
+  const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+  if (!sheet || sheet.getLastRow() < 2) return false;
+
+  const idRange = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1);
+  const found = idRange.createTextFinder(String(id))
+    .matchEntireCell(true)
+    .matchCase(true)
+    .useRegularExpression(false)
+    .findNext();
+
+  if (!found) return false;
+
+  sheet.deleteRow(found.getRow());
+  return true;
 }
 
 function createJsonResponse(data) {
