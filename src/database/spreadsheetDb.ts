@@ -1135,3 +1135,89 @@ function queryTableDataUncached(ss, table, offset, limit, filters) {
       matchedRows.push(item);
     }
   }
+
+function writeTableData(ss, table, rows) {
+  const sheetName = SHEET_NAMES[table];
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+
+  const headers = TABLE_HEADERS[table];
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  const incomingRows = Array.isArray(rows) ? rows : [];
+  if (incomingRows.length === 0) return;
+
+  const existingSheetRows = readTableData(ss, table);
+  const incomingMap = {};
+  incomingRows.forEach(function(row) {
+    if (row && row.id) incomingMap[String(row.id).trim()] = row;
+  });
+
+  const mergedRows = incomingRows.slice();
+  if (table !== 'cages') {
+    existingSheetRows.forEach(function(sheetRow) {
+      if (!sheetRow) return;
+      const id = String(sheetRow.id || '').trim();
+      if (id && !incomingMap[id]) mergedRows.push(sheetRow);
+    });
+  }
+
+  const matrix = mergedRows.map(function(item) {
+    return headers.map(function(h) {
+      const val = item[h];
+      if (val === null || val === undefined) return '';
+      return typeof val === 'object' ? JSON.stringify(val) : val;
+    });
+  });
+
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+  }
+  sheet.getRange(2, 1, matrix.length, headers.length).setValues(matrix);
+}
+
+function upsertRecord(ss, table, record) {
+  if (!record || !record.id || !SHEET_NAMES[table]) return;
+  const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+  if (!sheet) return;
+
+  const headers = TABLE_HEADERS[table];
+  const rowValues = headers.map(function(h) {
+    const val = record[h];
+    if (val === null || val === undefined) return '';
+    return typeof val === 'object' ? JSON.stringify(val) : val;
+  });
+
+  const textFinder = sheet.getRange(2, 1, Math.max(1, sheet.getMaxRows() - 1), 1)
+    .createTextFinder(String(record.id))
+    .matchEntireCell(true)
+    .matchCase(false);
+
+  const found = textFinder.findNext();
+  if (found) {
+    sheet.getRange(found.getRow(), 1, 1, headers.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+}
+
+function deleteRecord(ss, table, id) {
+  if (!id || !SHEET_NAMES[table]) return false;
+  const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+  if (!sheet || sheet.getLastRow() < 2) return false;
+
+  const found = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1)
+    .createTextFinder(String(id))
+    .matchEntireCell(true)
+    .matchCase(false)
+    .findNext();
+
+  if (!found) return false;
+  sheet.deleteRow(found.getRow());
+  return true;
+}
+
+function createJsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
