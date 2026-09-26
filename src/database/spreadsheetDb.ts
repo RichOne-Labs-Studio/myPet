@@ -345,6 +345,47 @@ export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promis
  * Tarik data spesifik satu tabel dengan paging / chunking opsional
  * Menghindari beban berlebih saat data per sheet mencapai puluhan ribu baris.
  */
+export async function pullTablesBatchFromSpreadsheet(
+  webAppUrl: string,
+  tables: Array<keyof SpreadsheetDatabaseSchema>,
+  limit: number = 100
+): Promise<{ success: boolean; message: string; data?: Partial<SpreadsheetDatabaseSchema>; totals?: Record<string, number> }> {
+  if (!webAppUrl || !webAppUrl.trim()) {
+    return { success: false, message: 'URL Google Apps Script belum dikonfigurasi.' };
+  }
+
+  const cleanUrl = webAppUrl.trim();
+  const tableList = tables.map(String).join(',');
+  const fetchUrl = cleanUrl.includes('?')
+    ? `${cleanUrl}&action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${Math.min(100, Math.max(1, limit))}&_t=${Date.now()}`
+    : `${cleanUrl}?action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${Math.min(100, Math.max(1, limit))}&_t=${Date.now()}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const res = await fetch(fetchUrl, { method: 'GET', cache: 'no-store', signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) return { success: false, message: `Gagal mengambil batch tabel (HTTP ${res.status}).` };
+
+    const json = await res.json();
+    if (json?.status !== 'success' || !json?.data || typeof json.data !== 'object') {
+      return { success: false, message: json?.message || 'Format batch data dari Google Apps Script tidak sesuai.' };
+    }
+
+    const decryptedData = decryptDatabaseFromSpreadsheet(json.data);
+    return {
+      success: true,
+      message: 'Batch tabel berhasil ditarik dari Google Spreadsheet.',
+      data: decryptedData,
+      totals: json.totals || {},
+    };
+  } catch (err: any) {
+    if (err?.name === 'AbortError') return { success: false, message: 'Batch fetch timeout setelah 60 detik.' };
+    return { success: false, message: err?.message || 'Gagal mengambil batch tabel.' };
+  }
+}
+
 export async function queryTableFromSpreadsheet(
   webAppUrl: string,
   table: keyof SpreadsheetDatabaseSchema,
