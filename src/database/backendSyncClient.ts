@@ -59,6 +59,33 @@ export async function fetchDatabaseFromBackend(): Promise<{
   }
 }
 
+export async function fetchBootstrapFromBackend(options: { perTable?: number } = {}): Promise<{
+  success: boolean;
+  data?: Partial<SpreadsheetDatabaseSchema>;
+  status?: BackendSyncStatus;
+  message?: string;
+}> {
+  try {
+    const perTable = Math.min(200, Math.max(25, Number(options.perTable) || 100));
+    const res = await fetch('/api/sync/bootstrap?limit=' + perTable, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return { success: false, message: 'Server error: ' + res.status };
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return { success: false, message: 'Static host without backend' };
+    }
+    const json = await res.json();
+    if (json.success && json.data) {
+      return { success: true, data: json.data, status: json.status };
+    }
+    return { success: false, message: json.message || 'Gagal memuat bootstrap data' };
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Koneksi bootstrap backend gagal' };
+  }
+}
+
 export async function fetchStatusFromBackend(): Promise<BackendSyncStatus | null> {
   try {
     const res = await fetch('/api/sync/status', {
