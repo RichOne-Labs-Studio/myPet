@@ -36,6 +36,7 @@ import {
   SpreadsheetDatabaseSchema,
   testSpreadsheetConnection,
   pullFullDatabaseFromSpreadsheet,
+  pullTablesBatchFromSpreadsheet,
   pushFullDatabaseToSpreadsheet,
   pushTableToSpreadsheet,
   pushSingleRecordToSpreadsheet,
@@ -800,19 +801,36 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const total = totalFromCounts(ping.counts);
         if (total >= LARGE_DATA_THRESHOLD) {
           setIsLargeDataMode(true);
-          const tables: Array<keyof SpreadsheetDatabaseSchema> = [
-            'owners', 'pets', 'queues', 'soapRecords', 'cages',
-            'inventory', 'bookings', 'staff', 'feedbacks'
+
+          // Stage 7.2: one Apps Script request for the startup working set.
+          // SOAP remains query-first and is intentionally excluded from startup hydration.
+          const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
+            'owners', 'pets', 'queues', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
           ];
+          const batch = await pullTablesBatchFromSpreadsheet(
+            spreadsheetConfig.webAppUrl,
+            criticalTables,
+            100
+          );
+
+          if (batch.success && batch.data) {
+            hasInitialSyncedRef.current = true;
+            importDatabase(batch.data);
+            setSyncStatus('connected');
+            return true;
+          }
+
+          // Compatibility fallback while the Apps Script deployment is still on Stage 6.2.
+          // This keeps the existing production behavior intact until fetchTables is deployed.
           const pages = await Promise.all(
-            tables.map((table) =>
+            criticalTables.map((table) =>
               import('../database/spreadsheetDb').then(({ pullTableFromSpreadsheet }) =>
                 pullTableFromSpreadsheet(spreadsheetConfig.webAppUrl, table, 0, 100)
               )
             )
           );
           const data: Partial<SpreadsheetDatabaseSchema> = {};
-          tables.forEach((table, index) => {
+          criticalTables.forEach((table, index) => {
             const result: any = pages[index];
             if (result?.success) (data as any)[table] = result.data || [];
           });
