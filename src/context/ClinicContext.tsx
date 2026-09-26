@@ -42,6 +42,7 @@ import {
 } from '../database/spreadsheetDb';
 import {
   fetchDatabaseFromBackend,
+  fetchBootstrapFromBackend,
   fetchStatusFromBackend,
   triggerBackendSync,
   pushRecordToBackend,
@@ -248,6 +249,8 @@ interface ClinicContextType {
   // Spreadsheet Database Connection & Sync
   spreadsheetConfig: SpreadsheetConfig;
   syncStatus: SyncStatus;
+  /** True when the remote dataset is large enough to use lazy/remote loading. */
+  isLargeDataMode: boolean;
   lastSyncMessage: string | null;
   connectSpreadsheet: (url: string) => Promise<{ success: boolean; message: string }>;
   disconnectSpreadsheet: () => void;
@@ -682,13 +685,24 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     spreadsheetConfig.isConnected ? 'connected' : 'idle'
   );
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
+  // Browser tidak memuat seluruh tabel saat dataset besar.
+  const [isLargeDataMode, setIsLargeDataMode] = useState(false);
+  const LARGE_DATA_THRESHOLD = 20000;
 
   // Versi backend lokal untuk mendeteksi pembaruan data secara otomatis
   const localBackendVersionRef = useRef<number>(0);
 
-  // 1. Initial Load: IndexedDB (Instan <10ms) + Backend Data (~15ms)
+  // 1. Initial Load
+  // Small dataset: gunakan cache + full sync seperti sebelumnya.
+  // Large dataset: jangan pernah hydrate 100k+ rows ke browser; gunakan bootstrap ringan.
   useEffect(() => {
     let isMounted = true;
+
+    const totalFromCounts = (counts?: Record<string, number>) =>
+      Object.values(counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
     async function loadCachedDatabase() {
       try {
         const [
@@ -715,46 +729,125 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         if (!isMounted) return;
 
-        if (cachedOwners && Array.isArray(cachedOwners) && cachedOwners.length > 0) setOwners(cachedOwners);
-        if (cachedPets && Array.isArray(cachedPets) && cachedPets.length > 0) setPets(cachedPets);
-        if (cachedQueues && Array.isArray(cachedQueues) && cachedQueues.length > 0) setQueues(cachedQueues);
-        if (cachedSoap && Array.isArray(cachedSoap) && cachedSoap.length > 0) setSoapRecords(cachedSoap);
-        if (cachedCages && Array.isArray(cachedCages) && cachedCages.length > 0) setCages(cachedCages);
-        if (cachedInventory && Array.isArray(cachedInventory) && cachedInventory.length > 0) setInventory(cachedInventory);
-        if (cachedBookings && Array.isArray(cachedBookings) && cachedBookings.length > 0) setBookings(cachedBookings);
-        if (cachedStaff && Array.isArray(cachedStaff) && cachedStaff.length > 0) setStaffList(cachedStaff);
-        if (cachedFeedbacks && Array.isArray(cachedFeedbacks) && cachedFeedbacks.length > 0) setFeedbacks(cachedFeedbacks);
+        if (cachedOwners?.length) setOwners(cachedOwners);
+        if (cachedPets?.length) setPets(cachedPets);
+        if (cachedQueues?.length) setQueues(cachedQueues);
+        if (cachedSoap?.length) setSoapRecords(cachedSoap);
+        if (cachedCages?.length) setCages(cachedCages);
+        if (cachedInventory?.length) setInventory(cachedInventory);
+        if (cachedBookings?.length) setBookings(cachedBookings);
+        if (cachedStaff?.length) setStaffList(cachedStaff);
+        if (cachedFeedbacks?.length) setFeedbacks(cachedFeedbacks);
       } catch (err) {
         console.warn('Gagal membaca cache IndexedDB lokal:', err);
       }
+    }
 
-      // Ambil data terbaru dari backend Express (atau fallback ke Google Sheets jika di static host seperti GitHub Pages)
+    async function loadLargeBootstrap(status?: any) {
+      const bootstrap = await fetchBootstrapFromBackend({ perTable: 100 });
+      if (bootstrap.success && bootstrap.data && isMounted) {
+        setIsLargeDataMode(true);
+        hasInitialSyncedRef.current = true;
+        importDatabase(bootstrap.data);
+        if (bootstrap.status?.version) {
+          localBackendVersionRef.current = bootstrap.status.version;
+        }
+        setSyncStatus('connected');
+        return true;
+      }
+      return false;
+    }
+
+    async function loadFromStaticSpreadsheet() {
+      if (!spreadsheetConfig.webAppUrl || !spreadsheetConfig.isConnected) return false;
+
       try {
+        const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
+        const total = totalFromCounts(ping.counts);
+        if (total >= LARGE_DATA_THRESHOLD) {
+          setIsLargeDataMode(true);
+          const tables: Array<keyof SpreadsheetDatabaseSchema> = [
+            'owners', 'pets', 'queues', 'soapRecords', 'cages',
+            'inventory', 'bookings', 'staff', 'feedbacks'
+          ];
+          const pages = await Promise.all(
+            tables.map((table) =>
+              import('../database/spreadsheetDb').then(({ pullTableFromSpreadsheet }) =>
+                pullTableFromSpreadsheet(spreadsheetConfig.webAppUrl, table, 0, 100)
+              )
+            )
+          );
+          const data: Partial<SpreadsheetDatabaseSchema> = {};
+          tables.forEach((table, index) => {
+            const result: any = pages[index];
+            if (result?.success) (data as any)[table] = result.data || [];
+          });
+          hasInitialSyncedRef.current = true;
+          importDatabase(data);
+          setSyncStatus('connected');
+          return true;
+        }
+
+        const full = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
+        if (full.success && full.data) {
+          hasInitialSyncedRef.current = true;
+          importDatabase(full.data);
+          setSyncStatus('connected');
+          return true;
+        }
+      } catch (err) {
+        console.warn('Initial direct Spreadsheet gagal:', err);
+      }
+      return false;
+    }
+
+    async function loadInitial() {
+      // Prioritaskan status remote sebelum membaca cache besar.
+      try {
+        let status = await fetchStatusFromBackend();
+
+        // Backend baru mulai sinkronisasi: beri waktu cache server terisi.
+        if (status?.isSyncing && totalFromCounts(status.counts) === 0) {
+          await triggerBackendSync();
+          for (let i = 0; i < 20 && isMounted; i++) {
+            await sleep(500);
+            status = await fetchStatusFromBackend();
+            if (status && (!status.isSyncing || totalFromCounts(status.counts) > 0)) break;
+          }
+        }
+
+        const total = totalFromCounts(status?.counts);
+        if (status && (total >= LARGE_DATA_THRESHOLD || status.isSyncing)) {
+          const loaded = await loadLargeBootstrap(status);
+          if (loaded) {
+            const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+            setLastSyncMessage(`Mode data besar aktif — browser memuat working set ringan (${time} WIB)`);
+            return;
+          }
+        }
+
+        // Dataset kecil tetap memakai mekanisme cache lokal penuh.
+        await loadCachedDatabase();
+
         const backendRes = await fetchDatabaseFromBackend();
         if (isMounted && backendRes.success && backendRes.data) {
           hasInitialSyncedRef.current = true;
           importDatabase(backendRes.data);
-          if (backendRes.status?.version) {
-            localBackendVersionRef.current = backendRes.status.version;
-          }
+          if (backendRes.status?.version) localBackendVersionRef.current = backendRes.status.version;
           setSyncStatus('connected');
           const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
           setLastSyncMessage(`Sinkronisasi otomatis backend aktif (${time} WIB)`);
-        } else {
-          // Fallback untuk GitHub Pages / Static Hosting (tanpa backend server Express)
-          if (spreadsheetConfig.webAppUrl && spreadsheetConfig.isConnected) {
-            syncFromSpreadsheet(false);
-          }
+          return;
         }
       } catch (err) {
-        console.warn('Initial fetch ke backend gagal, beralih ke direct Spreadsheet:', err);
-        if (spreadsheetConfig.webAppUrl && spreadsheetConfig.isConnected) {
-          syncFromSpreadsheet(false);
-        }
+        console.warn('Initial fetch backend gagal:', err);
       }
+
+      // GitHub Pages / static hosting.
+      await loadFromStaticSpreadsheet();
     }
 
-    loadCachedDatabase();
+    loadInitial();
     return () => {
       isMounted = false;
     };
