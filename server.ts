@@ -81,6 +81,28 @@ app.get('/api/sync/query', (req, res) => {
   }
 });
 
+// 1c. Bootstrap ringan untuk browser pada dataset besar.
+// Server tetap memegang database penuh; browser hanya menerima working set kecil.
+app.get('/api/sync/bootstrap', (req, res) => {
+  try {
+    const limit = Math.min(200, Math.max(25, Number(req.query.limit) || 100));
+    const tables = ['owners','pets','queues','soapRecords','cages','inventory','bookings','staff','feedbacks'] as const;
+    const data: Record<string, any[]> = {};
+    for (const table of tables) {
+      data[table] = syncManager.queryTable(table, { page: 1, limit }).data;
+    }
+    res.json({
+      success: true,
+      data,
+      status: syncManager.getStatus(),
+      bootstrap: true,
+      limit,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // 2. Status sinkronisasi & versi database saat ini (Ringan ~100 bytes untuk polling)
 app.get('/api/sync/status', (req, res) => {
   try {
