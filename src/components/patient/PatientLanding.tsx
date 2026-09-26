@@ -254,12 +254,12 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
       </header>
 
       {/* Main Content Hero */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-12 md:py-16 max-w-4xl mx-auto w-full text-center">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-8 sm:py-12 md:py-16 max-w-4xl mx-auto w-full text-center">
         {/* Banner Registrasi Berhasil */}
         {registrationSuccessBanner && (
           <div
             id="registration-success-alert"
-            className="w-full max-w-xl mb-6 bg-emerald-50 border border-emerald-300/80 text-emerald-950 rounded-2xl p-4 sm:p-5 flex items-start justify-between shadow-sm animate-in fade-in slide-in-from-top-2 duration-300 text-left"
+            className="w-full max-w-2xl mb-6 bg-emerald-50 border border-emerald-300/80 text-emerald-950 rounded-2xl p-4 sm:p-5 flex items-start justify-between shadow-sm animate-in fade-in slide-in-from-top-2 duration-300 text-left"
           >
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
@@ -274,10 +274,10 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                     Tersimpan Resmi
                   </span>
                 </div>
-                <p className="text-xs text-emerald-800 mt-1 leading-relaxed">
+                <p className="text-xs sm:text-sm text-emerald-800 mt-1 leading-relaxed">
                   Data hewan <strong>{registrationSuccessBanner.petName}</strong> ({registrationSuccessBanner.petType || 'Pasien'}) milik <strong>{registrationSuccessBanner.ownerName}</strong> telah berhasil didaftarkan di database klinik Vier Pet Care.
                 </p>
-                <p className="text-[11px] text-emerald-700/80 mt-1">
+                <p className="text-[11px] sm:text-xs text-emerald-700/80 mt-1">
                   Hewan Anda sudah resmi terdata untuk kunjungan atau pemeriksaan di waktu mendatang tanpa perlu antre hari ini.
                 </p>
               </div>
@@ -294,65 +294,66 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
         )}
 
         {/* Soft Badge */}
-        <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-fuchsia-100/80 text-fuchsia-900 text-xs sm:text-sm font-medium mb-6 border border-fuchsia-200">
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-fuchsia-100/80 text-fuchsia-900 text-xs sm:text-sm font-semibold mb-4 sm:mb-6 border border-fuchsia-200">
           <Sparkles className="w-4 h-4 text-fuchsia-600" />
           <span>Portal Pasien & Pendaftaran Mandiri Online</span>
         </div>
 
         {/* Hero Title */}
-        <h1 className="text-3xl sm:text-5xl font-extrabold text-neutral-900 tracking-tight leading-tight max-w-2xl mb-4">
+        <h1 className="text-2xl sm:text-4xl md:text-5xl font-black text-neutral-900 tracking-tight leading-tight max-w-2xl mb-3 sm:mb-4">
           Perawatan Kasih Sayang untuk <span className="text-fuchsia-600">Sahabat Berbulu</span> Anda
         </h1>
-        <p className="text-base sm:text-lg text-neutral-600 max-w-xl mb-10 leading-relaxed">
+        <p className="text-sm sm:text-base md:text-lg text-neutral-600 max-w-xl mb-6 sm:mb-8 leading-relaxed">
           Ambil nomor antrean secara instan dan pantau giliran pemeriksaan dokter hewan secara langsung.
         </p>
 
         {/* Live Queue Pulse Bar */}
-        <div id="live-clinic-status" className="w-full max-w-xl bg-white rounded-2xl p-4 sm:p-5 border border-fuchsia-100 shadow-sm mb-10 text-left">
+        <div id="live-clinic-status" className="w-full max-w-2xl bg-white rounded-2xl p-4 sm:p-5 border border-fuchsia-100 shadow-sm mb-6 sm:mb-8 text-left">
           <div className="flex items-center justify-between pb-3 border-b border-neutral-100 mb-3">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-fuchsia-500 animate-ping"></span>
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-500">Status Poli Hari Ini</span>
+              <span className="text-xs sm:text-sm font-bold uppercase tracking-wider text-neutral-600">Status Poli Hari Ini</span>
             </div>
-            <span className="text-xs text-fuchsia-700 font-medium bg-fuchsia-50 px-2.5 py-0.5 rounded-md border border-fuchsia-200">
+            <span className="text-xs font-semibold text-fuchsia-700 bg-fuchsia-50 px-2.5 py-0.5 rounded-md border border-fuchsia-200">
               Real-Time Sync
             </span>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-100">
-              <p className="text-xs text-neutral-500 font-medium mb-0.5">Sedang Dilayani</p>
-              <p className="text-xl sm:text-2xl font-black text-fuchsia-600">{currentServingTicket || '-'}</p>
+          <div className="grid grid-cols-3 gap-2 sm:gap-3 text-center">
+            <div className="p-2.5 sm:p-3 bg-neutral-50 rounded-xl border border-neutral-100">
+              <p className="text-xs sm:text-sm text-neutral-500 font-medium mb-0.5">Sedang Dilayani</p>
+              <p className="text-xl sm:text-3xl font-black text-fuchsia-600">{currentServingTicket || '-'}</p>
             </div>
-            <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-100">
-              <p className="text-xs text-neutral-500 font-medium mb-0.5">Antrean Menunggu</p>
-              <p className="text-xl sm:text-2xl font-black text-neutral-800">{waitingCount} <span className="text-xs font-normal text-neutral-400">pet</span></p>
+            <div className="p-2.5 sm:p-3 bg-neutral-50 rounded-xl border border-neutral-100">
+              <p className="text-xs sm:text-sm text-neutral-500 font-medium mb-0.5">Antrean Menunggu</p>
+              <p className="text-xl sm:text-3xl font-black text-neutral-800">{waitingCount} <span className="text-xs font-normal text-neutral-400">pet</span></p>
             </div>
-            <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-100">
-              <p className="text-xs text-neutral-500 font-medium mb-0.5">Estimasi Tunggu</p>
-              <p className="text-xl sm:text-2xl font-black text-fuchsia-600">~{waitingCount * 12} <span className="text-xs font-normal text-neutral-400">mnt</span></p>
+            <div className="p-2.5 sm:p-3 bg-neutral-50 rounded-xl border border-neutral-100">
+              <p className="text-xs sm:text-sm text-neutral-500 font-medium mb-0.5">Estimasi Tunggu</p>
+              <p className="text-xl sm:text-3xl font-black text-fuchsia-600">~{waitingCount * 12} <span className="text-xs font-normal text-neutral-400">mnt</span></p>
             </div>
           </div>
         </div>
 
         {/* Two Large Center Action Buttons */}
-        <div id="portal-actions" className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 w-full max-w-xl">
+        <div id="portal-actions" className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 w-full max-w-2xl">
           <button
             id="btn-register-new-visit"
             onClick={() => navigate('/pasien/daftar')}
-            className="group relative flex flex-col items-center justify-center p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-fuchsia-500 to-fuchsia-700 hover:from-fuchsia-600 hover:to-fuchsia-800 text-white shadow-lg shadow-fuchsia-500/25 transition-all transform active:scale-98 border border-fuchsia-400/30 text-center"
+            className="group relative flex flex-col items-center justify-center p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-fuchsia-600 to-fuchsia-800 hover:from-fuchsia-700 hover:to-fuchsia-900 text-white shadow-xl shadow-fuchsia-600/25 transition-all transform active:scale-98 border border-fuchsia-400/40 text-center cursor-pointer"
           >
-            <div className="w-14 h-14 rounded-2xl bg-white/15 flex items-center justify-center text-3xl mb-3 group-hover:scale-110 transition">
+            <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center text-3xl sm:text-4xl mb-3 group-hover:scale-110 transition shadow-inner">
               🐾
             </div>
-            <span className="text-lg sm:text-xl font-bold tracking-tight mb-1">
+            <span className="text-xl sm:text-2xl font-black tracking-tight mb-1">
               Daftar Kunjungan Baru
             </span>
-            <span className="text-xs text-fuchsia-100 font-medium">
+            <span className="text-xs sm:text-sm text-fuchsia-100 font-medium max-w-xs">
               Ambil nomor antrean & registrasi hewan (3 langkah mudah)
             </span>
-            <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold bg-white text-fuchsia-700 px-3.5 py-1.5 rounded-full shadow-xs group-hover:bg-fuchsia-50">
-              Mulai Pendaftaran <ArrowRight className="w-3.5 h-3.5" />
+            <div className="mt-5 inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold bg-white text-fuchsia-800 px-4 py-2 rounded-full shadow-md group-hover:bg-fuchsia-50 transition">
+              <span>Mulai Pendaftaran</span>
+              <ArrowRight className="w-4 h-4" />
             </div>
           </button>
 
@@ -363,34 +364,35 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
               setSearchError('');
               setShowCheckModal(true);
             }}
-            className="group relative flex flex-col items-center justify-center p-6 sm:p-7 rounded-2xl bg-white hover:bg-neutral-50 text-neutral-800 shadow-md shadow-neutral-200/50 transition-all transform active:scale-98 border-2 border-neutral-200 hover:border-fuchsia-300 text-center"
+            className="group relative flex flex-col items-center justify-center p-6 sm:p-8 rounded-3xl bg-white hover:bg-neutral-50 text-neutral-800 shadow-lg shadow-neutral-200/60 transition-all transform active:scale-98 border-2 border-neutral-200 hover:border-fuchsia-400 text-center cursor-pointer"
           >
-            <div className="w-14 h-14 rounded-2xl bg-fuchsia-50 text-fuchsia-600 flex items-center justify-center text-3xl mb-3 group-hover:scale-110 transition border border-fuchsia-100">
+            <div className="w-16 h-16 rounded-2xl bg-fuchsia-50 text-fuchsia-600 flex items-center justify-center text-3xl sm:text-4xl mb-3 group-hover:scale-110 transition border border-fuchsia-100">
               📱
             </div>
-            <span className="text-lg sm:text-xl font-bold tracking-tight text-neutral-900 mb-1">
+            <span className="text-xl sm:text-2xl font-black tracking-tight text-neutral-900 mb-1">
               Cek Status Antrean & Data Pasien
             </span>
-            <span className="text-xs text-neutral-500 font-medium">
-              Lihat posisi antrean live atau cek data rekam hewan terdaftar via nama pemilik & no. WhatsApp
+            <span className="text-xs sm:text-sm text-neutral-500 font-medium max-w-xs">
+              Lihat posisi antrean live atau cek data rekam hewan terdaftar via nama & WhatsApp
             </span>
-            <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold bg-fuchsia-50 text-fuchsia-700 px-3.5 py-1.5 rounded-full shadow-xs group-hover:bg-fuchsia-100">
-              Cek Antrean & Data Pasien <Search className="w-3.5 h-3.5" />
+            <div className="mt-5 inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold bg-fuchsia-50 text-fuchsia-700 px-4 py-2 rounded-full shadow-xs group-hover:bg-fuchsia-100 transition border border-fuchsia-200">
+              <span>Cek Antrean & Data Pasien</span>
+              <Search className="w-4 h-4" />
             </div>
           </button>
         </div>
 
         {/* Kotak Saran & Masukan Pasien */}
-        <div id="kotak-saran-pasien" className="w-full max-w-3xl mt-12 bg-white rounded-3xl p-6 sm:p-8 border border-neutral-200 shadow-sm text-left">
-          <div className="flex items-center gap-3 pb-4 border-b border-neutral-100 mb-6">
-            <div className="w-10 h-10 rounded-2xl bg-fuchsia-100 text-fuchsia-700 flex items-center justify-center shrink-0">
+        <div id="kotak-saran-pasien" className="w-full max-w-2xl mt-8 sm:mt-12 bg-white rounded-3xl p-5 sm:p-8 border border-neutral-200 shadow-sm text-left">
+          <div className="flex items-center gap-3 pb-4 border-b border-neutral-100 mb-5">
+            <div className="w-11 h-11 rounded-2xl bg-fuchsia-100 text-fuchsia-700 flex items-center justify-center shrink-0">
               <MessageSquare className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-neutral-900 tracking-tight">
+              <h3 className="text-base sm:text-lg font-bold text-neutral-900 tracking-tight">
                 Tingkat Kepuasan & Kotak Saran Pasien
               </h3>
-              <p className="text-xs text-neutral-500 mt-0.5">
+              <p className="text-xs sm:text-sm text-neutral-500 mt-0.5">
                 Beri nilai kepuasan dan masukan untuk pelayanan dokter, kenyamanan klinik, dan keramahan staf Vier Pet Care.
               </p>
             </div>
