@@ -826,10 +826,17 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setIsLargeDataMode(true);
         }
 
+        const batchLimits = criticalTables.reduce<Partial<Record<keyof SpreadsheetDatabaseSchema, number>>>((acc, table) => {
+          const count = ping.counts?.[String(table)];
+          if (typeof count === 'number') acc[table] = count;
+          return acc;
+        }, {});
+
         const batch = await pullTablesBatchFromSpreadsheet(
           spreadsheetConfig.webAppUrl,
           criticalTables,
-          100
+          100,
+          batchLimits
         );
 
         if (batch.success && batch.data) {
@@ -1184,10 +1191,18 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
             'owners', 'pets', 'queues', 'soapRecords', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
           ];
+          const knownCounts = pollCountsRef.current || {};
+          const batchLimits = criticalTables.reduce<Partial<Record<keyof SpreadsheetDatabaseSchema, number>>>((acc, table) => {
+            const count = knownCounts[String(table)];
+            if (typeof count === 'number') acc[table] = count;
+            return acc;
+          }, {});
+
           const batchRes = await pullTablesBatchFromSpreadsheet(
             spreadsheetConfig.webAppUrl,
             criticalTables,
-            100
+            100,
+            batchLimits
           );
           if (batchRes.success && batchRes.data) {
             hasInitialSyncedRef.current = true;
