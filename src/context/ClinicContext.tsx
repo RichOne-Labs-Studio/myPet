@@ -166,16 +166,30 @@ function useAutoSyncTable<T extends { id?: string | number }>(
         }
 
         for (const id of deleted) {
-          // The backend client remains the source of truth for deletion when available.
-          // Direct Google Sheets deletion is handled by the existing backend sync flow.
+          // GitHub Pages has no Express /api backend, so delete directly through Apps Script.
+          // Hosted deployments with the Express backend keep using the backend deletion path.
+          const staticHost =
+            typeof window !== 'undefined' &&
+            (window.location.hostname.endsWith('.github.io') ||
+              window.location.hostname === 'localhost' ||
+              window.location.hostname === '127.0.0.1');
+
           try {
-            await fetch('/api/sync/delete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ table, id }),
-            });
+            if (staticHost && config.webAppUrl) {
+              await fetch(config.webAppUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action: 'delete', table, id }),
+              });
+            } else {
+              await fetch('/api/sync/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ table, id }),
+              });
+            }
           } catch {
-            // Keep UI responsive; the next backend sync can reconcile the row.
+            // Keep UI responsive; the next sync can reconcile the row.
           }
         }
 
