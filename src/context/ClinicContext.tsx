@@ -803,45 +803,40 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try {
         const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
         const total = totalFromCounts(ping.counts);
+
+        // Stage 7.2 runtime guard:
+        // Do not rely only on ping counts to decide whether Batch Read is needed.
+        // Some Apps Script deployments can return incomplete/stale count metadata.
+        // Probe the lightweight batch endpoint first; its totals are authoritative
+        // for the tables returned by fetchTables.
+        const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
+          'owners', 'pets', 'queues', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
+        ];
+
         if (total >= BATCH_STARTUP_THRESHOLD) {
           setIsLargeDataMode(true);
+        }
 
-          // Stage 7.2: one Apps Script request for the startup working set.
-          // SOAP remains query-first and is intentionally excluded from startup hydration.
-          const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
-            'owners', 'pets', 'queues', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
-          ];
-          const batch = await pullTablesBatchFromSpreadsheet(
-            spreadsheetConfig.webAppUrl,
-            criticalTables,
-            100
-          );
+        const batch = await pullTablesBatchFromSpreadsheet(
+          spreadsheetConfig.webAppUrl,
+          criticalTables,
+          100
+        );
 
-          if (batch.success && batch.data) {
+        if (batch.success && batch.data) {
+          const batchTotal = totalFromCounts(batch.totals);
+          const effectiveTotal = Math.max(total, batchTotal);
+
+          if (effectiveTotal >= BATCH_STARTUP_THRESHOLD) {
+            setIsLargeDataMode(true);
             hasInitialSyncedRef.current = true;
             importDatabase(batch.data);
             setSyncStatus('connected');
             return true;
           }
 
-          // Compatibility fallback while the Apps Script deployment is still on Stage 6.2.
-          // This keeps the existing production behavior intact until fetchTables is deployed.
-          const pages = await Promise.all(
-            criticalTables.map((table) =>
-              import('../database/spreadsheetDb').then(({ pullTableFromSpreadsheet }) =>
-                pullTableFromSpreadsheet(spreadsheetConfig.webAppUrl, table, 0, 100)
-              )
-            )
-          );
-          const data: Partial<SpreadsheetDatabaseSchema> = {};
-          criticalTables.forEach((table, index) => {
-            const result: any = pages[index];
-            if (result?.success) (data as any)[table] = result.data || [];
-          });
-          hasInitialSyncedRef.current = true;
-          importDatabase(data);
-          setSyncStatus('connected');
-          return true;
+          // Dataset is genuinely below the large-data threshold.
+          // Preserve the existing full-read behavior for smaller installations.
         }
 
         const full = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
