@@ -819,7 +819,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         // Probe the lightweight batch endpoint first; its totals are authoritative
         // for the tables returned by fetchTables.
         const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
-          'owners', 'pets', 'queues', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
+          'owners', 'pets', 'queues', 'soapRecords', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
         ];
 
         if (total >= BATCH_STARTUP_THRESHOLD) {
@@ -1182,7 +1182,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try {
         if (isLargeDataMode) {
           const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
-            'owners', 'pets', 'queues', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
+            'owners', 'pets', 'queues', 'soapRecords', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
           ];
           const batchRes = await pullTablesBatchFromSpreadsheet(
             spreadsheetConfig.webAppUrl,
