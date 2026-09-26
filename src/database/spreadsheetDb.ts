@@ -312,12 +312,25 @@ export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promis
  * Tarik data spesifik satu tabel dengan paging / chunking opsional
  * Menghindari beban berlebih saat data per sheet mencapai puluhan ribu baris.
  */
+export async function queryTableFromSpreadsheet(
+  webAppUrl: string,
+  table: keyof SpreadsheetDatabaseSchema,
+  options: { page?: number; limit?: number; search?: string; species?: string; status?: string } = {}
+): Promise<{ success: boolean; message: string; data?: any[]; total?: number; page?: number; limit?: number; totalPages?: number }> {
+  const page = Math.max(1, options.page || 1);
+  const limit = Math.min(100, Math.max(1, options.limit || 10));
+  return pullTableFromSpreadsheet(webAppUrl, table, (page - 1) * limit, limit, {
+    search: options.search || '', species: options.species || '', status: options.status || ''
+  });
+}
+
 export async function pullTableFromSpreadsheet(
   webAppUrl: string,
   table: keyof SpreadsheetDatabaseSchema,
   offset: number = 0,
-  limit?: number
-): Promise<{ success: boolean; message: string; data?: any[] }> {
+  limit?: number,
+  filters: { search?: string; species?: string; status?: string } = {}
+): Promise<{ success: boolean; message: string; data?: any[]; total?: number; page?: number; limit?: number; totalPages?: number }> {
   if (!webAppUrl || !webAppUrl.trim()) {
     return { success: false, message: 'URL Google Apps Script belum dikonfigurasi.' };
   }
@@ -330,6 +343,9 @@ export async function pullTableFromSpreadsheet(
   if (limit) {
     fetchUrl += `&limit=${limit}`;
   }
+  if (filters.search) fetchUrl += `&search=${encodeURIComponent(filters.search)}`;
+  if (filters.species) fetchUrl += `&species=${encodeURIComponent(filters.species)}`;
+  if (filters.status) fetchUrl += `&status=${encodeURIComponent(filters.status)}`;
 
   try {
     const controller = new AbortController();
