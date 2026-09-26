@@ -231,6 +231,39 @@ export function decryptDatabaseFromSpreadsheet(db: Partial<SpreadsheetDatabaseSc
   } as SpreadsheetDatabaseSchema;
 }
 
+export interface SpreadsheetHealth {
+  success: boolean;
+  stage?: string;
+  deploymentMarker?: string;
+  counts?: Record<string, number>;
+  totalRecords?: number;
+  threshold?: number;
+  usagePercent?: number;
+  largestTable?: { table: string; count: number } | null;
+  warnings?: string[];
+  timestamp?: string;
+  message?: string;
+}
+
+export async function checkSpreadsheetHealth(webAppUrl: string): Promise<SpreadsheetHealth> {
+  if (!webAppUrl || !webAppUrl.trim()) return { success: false, message: 'URL Google Apps Script Web App belum diisi.' };
+  const cleanUrl = webAppUrl.trim();
+  const healthUrl = cleanUrl.includes('?') ? cleanUrl + '&action=health&_t=' + Date.now() : cleanUrl + '?action=health&_t=' + Date.now();
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const res = await fetch(healthUrl, { method: 'GET', cache: 'no-store', signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!res.ok) return { success: false, message: 'HTTP Error: ' + res.status + ' (' + res.statusText + ').' };
+    const data = await res.json();
+    if (data && data.status === 'success') return data as SpreadsheetHealth;
+    return { success: false, message: data?.message || 'Respons monitoring tidak sesuai.' };
+  } catch (err: any) {
+    if (err.name === 'AbortError') return { success: false, message: 'Monitoring timeout setelah 25 detik.' };
+    return { success: false, message: err.message || 'Gagal membaca status Google Sheets.' };
+  }
+}
+
 export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promise<{
   success: boolean;
   message: string;
@@ -757,9 +790,60 @@ function invalidateCountsCache() {
 
 function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ensureSheetsExist(ss);
-
   const action = e && e.parameter && e.parameter.action ? e.parameter.action : 'ping';
+
+  if (action === 'version') {
+    return createJsonResponse({
+      status: 'success',
+      stage: '6.2',
+      deploymentMarker: 'STAGE-6.2-MONITORING',
+      queryResultCache: false,
+      countCache: true,
+      textFinderUpsert: true,
+      textFinderDelete: true,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (action === 'health') {
+    const counts = {};
+    let totalRecords = 0;
+    let largestTable = null;
+    const warnings = [];
+    const threshold = 20000;
+
+    Object.keys(SHEET_NAMES).forEach(table => {
+      const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+      const count = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+      counts[table] = count;
+      totalRecords += count;
+      if (!largestTable || count > largestTable.count) largestTable = { table: table, count: count };
+    });
+
+    const usagePercent = Math.round((totalRecords / threshold) * 10000) / 100;
+    if (totalRecords >= threshold) {
+      warnings.push('Total record mencapai/melewati ambang large-data browser: ' + threshold + '.');
+    } else if (totalRecords >= threshold * 0.8) {
+      warnings.push('Total record sudah mencapai >=80% ambang large-data browser: ' + threshold + '.');
+    }
+    if (largestTable && largestTable.count >= 10000) {
+      warnings.push('Tabel terbesar sudah >=10.000 record: ' + largestTable.table + '.');
+    }
+
+    return createJsonResponse({
+      status: 'success',
+      stage: '6.2',
+      deploymentMarker: 'STAGE-6.2-MONITORING',
+      counts: counts,
+      totalRecords: totalRecords,
+      threshold: threshold,
+      usagePercent: usagePercent,
+      largestTable: largestTable,
+      warnings: warnings,
+      timestamp: new Date().toISOString()
+    });
+  }
+
 
   if (action === 'ping') {
     // Stage 6: gunakan cache untuk menghindari scan 9 kolom ID pada setiap ping.
@@ -1987,7 +2071,8 @@ function queryTableData(ss, table, offset, limit, filters) {
       if (search) {
         const digits = search.replace(/\\D/g, '');
         const phone = String(item.ownerWhatsapp || '').replace(/\\D/g, '');
-        if (!searchable.includes(search) && (!digits || !phone.includes(digits))) return false;
+        const phoneLikeSearch = /^[0-9+\-\s().]+$/.test(search);
+        if (!searchable.includes(search) && (!phoneLikeSearch || !digits || !phone.includes(digits))) return false;
       }
       if (species && String(item.type || '').toLowerCase() !== species) return false;
       if (status && String(item.status || '').toLowerCase() !== status) return false;
