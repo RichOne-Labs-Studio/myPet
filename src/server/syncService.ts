@@ -59,6 +59,62 @@ class ServerSyncManager {
   private isConnected: boolean = false;
   private pollIntervalId: NodeJS.Timeout | null = null;
   private lastCounts: Record<string, number> = {};
+  // Search index/cache: hindari lower-case + Object.values() berulang untuk setiap request.
+  private searchTextCache = new Map<string, Map<string, string>>();
+  private queryResultCache = new Map<string, { version: number; data: any[]; total: number; totalPages: number }>();
+  private readonly QUERY_CACHE_MAX = 250;
+
+  private invalidateQueryCaches(table?: keyof ClinicDatabase) {
+    if (!table) {
+      this.searchTextCache.clear();
+      this.queryResultCache.clear();
+      return;
+    }
+    this.searchTextCache.delete(table);
+    for (const key of this.queryResultCache.keys()) {
+      if (key.startsWith(String(table) + '|')) this.queryResultCache.delete(key);
+    }
+  }
+
+  private getSearchText(table: keyof ClinicDatabase, row: any): string {
+    const id = String(row?.id ?? '');
+    if (!id) return '';
+    let tableCache = this.searchTextCache.get(table);
+    if (!tableCache) {
+      tableCache = new Map<string, string>();
+      this.searchTextCache.set(table, tableCache);
+    }
+    const cached = tableCache.get(id);
+    if (cached !== undefined) return cached;
+
+    let text = '';
+    if (table === 'pets') {
+      text = [
+        row.name, row.id, row.breed, row.ownerName,
+        row.ownerAddress, row.ownerWhatsapp
+      ].map((v) => String(v ?? '').toLowerCase()).join(' ');
+    } else {
+      text = Object.values(row || {})
+        .map((v) => String(v ?? '').toLowerCase())
+        .join(' ');
+    }
+    tableCache.set(id, text);
+    return text;
+  }
+
+  private getSearchCandidates(table: keyof ClinicDatabase, search: string, source: any[]): any[] {
+    // Untuk pencarian pendek/arbitrary substring, tetap gunakan semantics lama.
+    // Cache teks membuat operasi jauh lebih murah daripada Object.values() berulang.
+    return source.filter((row) => this.getSearchText(table, row).includes(search));
+  }
+
+  private setQueryCache(key: string, value: { version: number; data: any[]; total: number; totalPages: number }) {
+    if (this.queryResultCache.size >= this.QUERY_CACHE_MAX) {
+      const first = this.queryResultCache.keys().next().value;
+      if (first) this.queryResultCache.delete(first);
+    }
+    this.queryResultCache.set(key, value);
+  }
 
   constructor() {
     this.ensureDataDirectory();
@@ -204,39 +260,61 @@ class ServerSyncManager {
     const species = String(options.species || '').trim().toLowerCase();
     const status = String(options.status || '').trim().toLowerCase();
 
-    let source = this.db[table] as any[];
-    if (search || species || status) {
-      source = source.filter((row) => {
-        if (table === 'pets') {
-          const text = [row.name, row.id, row.breed, row.ownerName, row.ownerAddress, row.ownerWhatsapp]
-            .map((v) => String(v ?? '').toLowerCase()).join(' ');
-          if (search && !text.includes(search)) {
-            const digits = search.replace(/\\D/g, '');
-            if (!digits || !String(row.ownerWhatsapp ?? '').replace(/\\D/g, '').includes(digits)) return false;
-          }
-          if (species && String(row.type ?? '').toLowerCase() !== species) return false;
-          if (status && String(row.status ?? '').toLowerCase() !== status) return false;
-          return true;
-        }
-        if (search) {
-          const text = Object.values(row || {}).map((v) => String(v ?? '').toLowerCase()).join(' ');
-          if (!text.includes(search)) return false;
-        }
+    const cacheKey = [
+      String(table), this.version, page, limit,
+      search, species, status
+    ].join('|');
+    const cached = this.queryResultCache.get(cacheKey);
+    if (cached && cached.version === this.version) {
+      return {
+        data: cached.data,
+        page,
+        limit,
+        total: cached.total,
+        totalPages: cached.totalPages,
+      };
+    }
+
+    const source = this.db[table] as any[];
+    let filtered = source;
+
+    // Apply selective fields first. This is cheaper than constructing search text
+    // for every row when a species/status filter already reduces the candidate set.
+    if (table === 'pets' && (species || status)) {
+      filtered = source.filter((row) => {
+        if (species && String(row.type ?? '').toLowerCase() !== species) return false;
+        if (status && String(row.status ?? '').toLowerCase() !== status) return false;
         return true;
+      });
+    } else if (status) {
+      filtered = source.filter((row) =>
+        String(row?.status ?? '').toLowerCase() === status
+      );
+    }
+
+    if (search) {
+      const digits = search.replace(/\\D/g, '');
+      filtered = filtered.filter((row) => {
+        const text = this.getSearchText(table, row);
+        if (text.includes(search)) return true;
+
+        // Preserve phone-number search behavior used by DataPasien.
+        if (table === 'pets' && digits) {
+          return String(row?.ownerWhatsapp ?? '').replace(/\\D/g, '').includes(digits);
+        }
+        return false;
       });
     }
 
-    const total = source.length;
+    const total = filtered.length;
     const start = (page - 1) * limit;
-    return {
-      data: source.slice(start, start + limit),
-      page,
-      limit,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-    };
-  }
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const data = filtered.slice(start, start + limit);
 
+    this.setQueryCache(cacheKey, { version: this.version, data, total, totalPages });
+
+    return { data, page, limit, total, totalPages };
+  }
 
   public setConfig(webAppUrl?: string, autoSync?: boolean) {
     if (webAppUrl && webAppUrl.trim()) {
@@ -330,6 +408,7 @@ class ServerSyncManager {
       this.lastSyncedAt = new Date().toISOString();
       this.version += 1;
       this.updateCounts();
+      this.invalidateQueryCaches();
       this.saveDatabaseToDisk();
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -367,6 +446,7 @@ class ServerSyncManager {
     }
 
     this.version += 1;
+    this.invalidateQueryCaches(table);
     this.saveDatabaseToDisk();
 
     // Push ke Google Apps Script di background tanpa memblokir response
@@ -384,6 +464,7 @@ class ServerSyncManager {
     const list = this.db[table] as any[];
     this.db[table] = list.filter((item) => String(item.id) !== String(id));
     this.version += 1;
+    this.invalidateQueryCaches(table);
     this.saveDatabaseToDisk();
     return this.version;
   }
@@ -444,6 +525,7 @@ class ServerSyncManager {
   public async updateTable(table: keyof ClinicDatabase, records: any[]): Promise<number> {
     this.db[table] = records;
     this.version += 1;
+    this.invalidateQueryCaches(table);
     this.saveDatabaseToDisk();
 
     // Push tabel ke Google Sheets di background
