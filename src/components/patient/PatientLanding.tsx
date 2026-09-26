@@ -336,7 +336,7 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
         </div>
 
         {/* Two Large Center Action Buttons */}
-        <div id="portal-actions" className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 w-full max-w-2xl">
+        <div id="portal-actions" className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full max-w-2xl">
           <button
             id="btn-register-new-visit"
             onClick={() => navigate('/pasien/daftar')}
@@ -404,22 +404,22 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                 <CheckCircle2 className="w-6 h-6" />
               </div>
               <h4 className="text-base font-bold text-emerald-900">Terima Kasih Atas Masukan & Penilaian Anda!</h4>
-              <p className="text-xs text-emerald-700 max-w-md mx-auto leading-relaxed">
+              <p className="text-xs sm:text-sm text-emerald-700 max-w-md mx-auto leading-relaxed">
                 Tingkat kepuasan serta saran & kritik Anda telah berhasil disimpan ke sistem Vier Pet Care untuk evaluasi peningkatan mutu klinik.
               </p>
               <button
                 type="button"
                 onClick={handleResetFeedback}
-                className="mt-2 text-xs font-semibold px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl transition inline-flex items-center gap-1.5 shadow-xs cursor-pointer"
+                className="mt-2 text-xs sm:text-sm font-semibold px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl transition inline-flex items-center gap-1.5 shadow-xs cursor-pointer"
               >
                 <span>Kirim Masukan Baru</span>
               </button>
             </div>
           ) : (
             <form onSubmit={handleFeedbackSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                  <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                     Nama Pemilik / Klien <span className="text-neutral-400 font-normal">(Opsional)</span>
                   </label>
                   <input
@@ -427,11 +427,11 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                     value={feedbackName}
                     onChange={(e) => setFeedbackName(e.target.value)}
                     placeholder="Contoh: Ibu Rina / Anonim"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-xs transition"
+                    className="w-full px-3.5 py-3 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-sm transition"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                  <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                     Nomor WhatsApp <span className="text-neutral-400 font-normal">(Awali angka 0, opsional)</span>
                   </label>
                   <input
@@ -444,14 +444,14 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                       }
                     }}
                     placeholder="Contoh: 081234567890"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-xs transition"
+                    className="w-full px-3.5 py-3 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-sm transition"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                  <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                     Nama Anabul / Hewan <span className="text-neutral-400 font-normal">(Opsional)</span>
                   </label>
                   <input
@@ -459,11 +459,11 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                     value={feedbackPetName}
                     onChange={(e) => setFeedbackPetName(e.target.value)}
                     placeholder="Contoh: Milo (Kucing Persia)"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-xs transition"
+                    className="w-full px-3.5 py-3 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-sm transition"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                  <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                     Nomor Tiket Antrean <span className="text-neutral-400 font-normal">(Jika ada)</span>
                   </label>
                   <input
@@ -471,20 +471,20 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                     value={feedbackTicket}
                     onChange={(e) => setFeedbackTicket(e.target.value)}
                     placeholder="Contoh: A-004"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-xs transition uppercase"
+                    className="w-full px-3.5 py-3 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-sm transition uppercase"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                  <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                     Kategori Layanan
                   </label>
                   <select
                     value={feedbackCategory}
                     onChange={(e) => setFeedbackCategory(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-xs bg-white transition"
+                    className="w-full px-3.5 py-3 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-sm bg-white transition"
                   >
                     <option value="Pelayanan Dokter & Medis">Pelayanan Dokter & Tindakan Medis</option>
                     <option value="Fasilitas & Kebersihan Klinik">Fasilitas & Kebersihan Klinik</option>
@@ -496,7 +496,7 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                  <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                     Tingkat Kepuasan Pelayanan
                   </label>
                   <div className="flex items-center gap-1.5 py-1">
@@ -509,7 +509,7 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                         title={`${star} Bintang`}
                       >
                         <Star
-                          className={`w-5 h-5 ${
+                          className={`w-6 h-6 sm:w-7 sm:h-7 ${
                             star <= feedbackRating
                               ? 'fill-amber-400 text-amber-400'
                               : 'text-neutral-300'
@@ -517,7 +517,7 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                         />
                       </button>
                     ))}
-                    <span className="text-xs text-neutral-600 font-semibold ml-2">
+                    <span className="text-xs sm:text-sm text-neutral-600 font-semibold ml-2">
                       {feedbackRating === 5 ? '5/5 (Sangat Puas ⭐⭐⭐⭐⭐)' : feedbackRating === 4 ? '4/5 (Puas ⭐⭐⭐⭐)' : feedbackRating === 3 ? '3/5 (Cukup ⭐⭐⭐)' : feedbackRating === 2 ? '2/5 (Kurang ⭐⭐)' : '1/5 (Sangat Kurang ⭐)'}
                     </span>
                   </div>
@@ -525,7 +525,7 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
+                <label className="block text-xs sm:text-sm font-semibold text-neutral-700 mb-1.5">
                   Saran, Kritik dan Masukan <span className="text-rose-500">*</span>
                 </label>
                 <textarea
@@ -536,7 +536,7 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
                     if (feedbackError) setFeedbackError('');
                   }}
                   placeholder="Tuliskan pengalaman, saran perbaikan, kritik atau masukan Anda untuk Vier Pet Care..."
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-xs resize-none transition"
+                  className="w-full px-3.5 py-3 rounded-xl border border-neutral-200 focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500/20 focus:border-fuchsia-500 text-sm resize-none transition"
                 />
                 {feedbackError && (
                   <p className="text-xs text-rose-500 font-medium mt-1">{feedbackError}</p>
@@ -546,9 +546,9 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
               <div className="flex items-center justify-end pt-1">
                 <button
                   type="submit"
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-2.5 bg-fuchsia-700 hover:bg-fuchsia-600 text-white text-xs font-bold rounded-xl shadow-md shadow-fuchsia-700/20 transition cursor-pointer"
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 bg-fuchsia-700 hover:bg-fuchsia-600 text-white text-sm font-bold rounded-xl shadow-md shadow-fuchsia-700/20 transition cursor-pointer"
                 >
-                  <Send className="w-3.5 h-3.5" />
+                  <Send className="w-4 h-4" />
                   <span>Kirim Saran & Nilai Kepuasan</span>
                 </button>
               </div>
