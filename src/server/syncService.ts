@@ -194,6 +194,49 @@ class ServerSyncManager {
   public getDatabase(): ClinicDatabase {
     return this.db;
   }
+  public queryTable(
+    table: keyof ClinicDatabase,
+    options: { page?: number; limit?: number; search?: string; species?: string; status?: string } = {}
+  ): { data: any[]; page: number; limit: number; total: number; totalPages: number } {
+    const page = Math.max(1, Number(options.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(options.limit) || 25));
+    const search = String(options.search || '').trim().toLowerCase();
+    const species = String(options.species || '').trim().toLowerCase();
+    const status = String(options.status || '').trim().toLowerCase();
+
+    let source = this.db[table] as any[];
+    if (search || species || status) {
+      source = source.filter((row) => {
+        if (table === 'pets') {
+          const text = [row.name, row.id, row.breed, row.ownerName, row.ownerAddress, row.ownerWhatsapp]
+            .map((v) => String(v ?? '').toLowerCase()).join(' ');
+          if (search && !text.includes(search)) {
+            const digits = search.replace(/\\D/g, '');
+            if (!digits || !String(row.ownerWhatsapp ?? '').replace(/\\D/g, '').includes(digits)) return false;
+          }
+          if (species && String(row.type ?? '').toLowerCase() !== species) return false;
+          if (status && String(row.status ?? '').toLowerCase() !== status) return false;
+          return true;
+        }
+        if (search) {
+          const text = Object.values(row || {}).map((v) => String(v ?? '').toLowerCase()).join(' ');
+          if (!text.includes(search)) return false;
+        }
+        return true;
+      });
+    }
+
+    const total = source.length;
+    const start = (page - 1) * limit;
+    return {
+      data: source.slice(start, start + limit),
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
+  }
+
 
   public setConfig(webAppUrl?: string, autoSync?: boolean) {
     if (webAppUrl && webAppUrl.trim()) {
