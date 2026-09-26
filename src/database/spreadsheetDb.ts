@@ -710,13 +710,22 @@ function doGet(e) {
     const table = e.parameter.table;
     const offset = e.parameter.offset ? parseInt(e.parameter.offset, 10) : 0;
     const limit = e.parameter.limit ? parseInt(e.parameter.limit, 10) : undefined;
-    const data = readTableData(ss, table, offset, limit);
+    const filters = {
+      search: e.parameter.search || '',
+      species: e.parameter.species || '',
+      status: e.parameter.status || ''
+    };
+    const result = queryTableData(ss, table, offset, limit, filters);
 
     return createJsonResponse({
       status: 'success',
       table: table,
-      data: data,
-      count: data.length,
+      data: result.data,
+      count: result.data.length,
+      total: result.total,
+      offset: offset,
+      limit: limit || result.total,
+      totalPages: limit ? Math.max(1, Math.ceil(result.total / limit)) : 1,
       timestamp: new Date().toISOString()
     });
   }
@@ -856,6 +865,61 @@ function readTableData(ss, table, offset, limit) {
   });
 
   return results;
+}
+
+function queryTableData(ss, table, offset, limit, filters) {
+  const sheetName = SHEET_NAMES[table];
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return { data: [], total: 0 };
+
+  const lastCol = sheet.getLastColumn();
+  const allRows = sheet.getRange(1, 1, sheet.getLastRow(), lastCol).getValues();
+  const headers = allRows.shift().map(h => String(h || '').trim());
+
+  const search = String(filters && filters.search || '').trim().toLowerCase();
+  const species = String(filters && filters.species || '').trim().toLowerCase();
+  const status = String(filters && filters.status || '').trim().toLowerCase();
+
+  const matches = allRows.map((row, rowIdx) => {
+    const item = {};
+    headers.forEach((header, idx) => {
+      if (!header) return;
+      let val = row[idx];
+      if (val instanceof Date) {
+        try { val = Utilities.formatDate(val, ss.getSpreadsheetTimeZone(), "yyyy-MM-dd HH:mm:ss"); } catch(e) {}
+      }
+      if (typeof val === 'string' && ((val.startsWith('{') && val.endsWith('}')) || (val.startsWith('[') && val.endsWith(']')))) {
+        try { val = JSON.parse(val); } catch(e) {}
+      }
+      item[header] = val;
+    });
+    return item;
+  }).filter(item => {
+    if (!Object.values(item).some(val => val !== '' && val !== null && val !== undefined)) return false;
+
+    if (table === 'pets') {
+      const searchable = [
+        item.name, item.id, item.breed, item.ownerName,
+        item.ownerAddress, item.ownerWhatsapp
+      ].map(v => String(v || '').toLowerCase()).join(' ');
+      if (search) {
+        const digits = search.replace(/\\D/g, '');
+        const phone = String(item.ownerWhatsapp || '').replace(/\\D/g, '');
+        if (!searchable.includes(search) && (!digits || !phone.includes(digits))) return false;
+      }
+      if (species && String(item.type || '').toLowerCase() !== species) return false;
+      if (status && String(item.status || '').toLowerCase() !== status) return false;
+    } else if (search) {
+      const searchable = Object.values(item).map(v => String(v || '').toLowerCase()).join(' ');
+      if (!searchable.includes(search)) return false;
+    }
+    return true;
+  });
+
+  const total = matches.length;
+  const start = Math.max(0, offset || 0);
+  const end = limit ? start + Math.max(0, limit) : total;
+  return { data: matches.slice(start, end), total: total };
 }
 
 function writeTableData(ss, table, rows) {
