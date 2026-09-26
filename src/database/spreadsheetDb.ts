@@ -691,6 +691,7 @@ const TABLE_HEADERS = {
 const CACHE_TTL_SECONDS = 120;
 const QUERY_CACHE_TTL_SECONDS = 60;
 const COUNTS_CACHE_KEY = 'mypet_counts_v1';
+const COUNTS_CACHE_TS_KEY = 'mypet_counts_ts_v1';
 const QUERY_CACHE_VERSION_KEY = 'mypet_query_cache_version_v1';
 const QUERY_CACHE_MAX_BYTES = 90000;
 
@@ -736,7 +737,8 @@ function getCachedCounts(ss) {
 
   const props = PropertiesService.getScriptProperties();
   const persisted = props.getProperty(COUNTS_CACHE_KEY);
-  if (persisted) {
+  const persistedTs = Number(props.getProperty(COUNTS_CACHE_TS_KEY) || '0');
+  if (persisted && persistedTs && (Date.now() - persistedTs) < CACHE_TTL_SECONDS * 1000) {
     try {
       const parsed = JSON.parse(persisted);
       cache.put(COUNTS_CACHE_KEY, persisted, CACHE_TTL_SECONDS);
@@ -748,6 +750,7 @@ function getCachedCounts(ss) {
   const serialized = JSON.stringify(counts);
   cache.put(COUNTS_CACHE_KEY, serialized, CACHE_TTL_SECONDS);
   props.setProperty(COUNTS_CACHE_KEY, serialized);
+  props.setProperty(COUNTS_CACHE_TS_KEY, String(Date.now()));
   return counts;
 }
 
@@ -761,7 +764,9 @@ function refreshCountsCache(ss) {
 
 function invalidateCountsCache() {
   CacheService.getScriptCache().remove(COUNTS_CACHE_KEY);
-  PropertiesService.getScriptProperties().deleteProperty(COUNTS_CACHE_KEY);
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(COUNTS_CACHE_KEY);
+  props.deleteProperty(COUNTS_CACHE_TS_KEY);
 }
 
 function makeQueryCacheKey(table, offset, limit, filters) {
