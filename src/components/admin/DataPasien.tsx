@@ -52,6 +52,7 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
     syncStatus,
     syncFromSpreadsheet,
     spreadsheetConfig,
+    isLargeDataMode,
   } = useClinic();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -250,7 +251,7 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
     return null;
   };
 
-  const useRemotePagination = pets.length > 20000;
+  const useRemotePagination = isLargeDataMode || pets.length > 20000;
   const [remotePets, setRemotePets] = useState<Pet[]>([]);
   const [remoteTotal, setRemoteTotal] = useState(0);
   const [remoteLoading, setRemoteLoading] = useState(false);
