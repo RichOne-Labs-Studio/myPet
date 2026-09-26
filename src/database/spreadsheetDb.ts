@@ -319,8 +319,35 @@ export async function queryTableFromSpreadsheet(
 ): Promise<{ success: boolean; message: string; data?: any[]; total?: number; page?: number; limit?: number; totalPages?: number }> {
   const page = Math.max(1, options.page || 1);
   const limit = Math.min(100, Math.max(1, options.limit || 10));
+
+  // Prefer the Node backend when the app is running with its API server.
+  // GitHub Pages has no /api endpoint, so it transparently falls back to Apps Script.
+  try {
+    const params = new URLSearchParams({
+      table: String(table),
+      page: String(page),
+      limit: String(limit),
+    });
+    if (options.search) params.set('search', options.search);
+    if (options.species) params.set('species', options.species);
+    if (options.status) params.set('status', options.status);
+
+    const apiRes = await fetch(`/api/sync/query?${params.toString()}`, {
+      method: 'GET',
+      cache: 'no-store',
+    });
+    if (apiRes.ok) {
+      const json = await apiRes.json();
+      if (json.success && Array.isArray(json.data)) return json;
+    }
+  } catch {
+    // Static hosting / unavailable backend: use Apps Script below.
+  }
+
   return pullTableFromSpreadsheet(webAppUrl, table, (page - 1) * limit, limit, {
-    search: options.search || '', species: options.species || '', status: options.status || ''
+    search: options.search || '',
+    species: options.species || '',
+    status: options.status || ''
   });
 }
 
