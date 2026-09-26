@@ -717,6 +717,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Browser tidak memuat seluruh tabel saat dataset besar.
   const [isLargeDataMode, setIsLargeDataMode] = useState(false);
   const LARGE_DATA_THRESHOLD = 20000;
+  // Start the lightweight startup working set before the browser approaches
+  // the full large-data threshold. This keeps growing datasets from falling
+  // back to fetchAll while still preserving the existing large-data threshold.
+  const BATCH_STARTUP_THRESHOLD = 16000;
 
   // GitHub Pages is the production static host. On static hosting, Google Sheets
   // via Apps Script is the single source of truth for READ operations.
@@ -799,7 +803,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try {
         const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
         const total = totalFromCounts(ping.counts);
-        if (total >= LARGE_DATA_THRESHOLD) {
+        if (total >= BATCH_STARTUP_THRESHOLD) {
           setIsLargeDataMode(true);
 
           // Stage 7.2: one Apps Script request for the startup working set.
@@ -1010,7 +1014,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     };
 
-    // Polling berkala (5s jika ada backend, atau 30s jika static)
+    // Polling berkala untuk mendeteksi perubahan jumlah baris tanpa full fetch.
     const intervalId = setInterval(poll, 10000);
     return () => clearInterval(intervalId);
   }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl, isLargeDataMode]);
