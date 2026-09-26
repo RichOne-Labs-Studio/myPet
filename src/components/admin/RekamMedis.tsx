@@ -34,6 +34,7 @@ import {
   Filter,
   Hotel,
   Lock,
+  Sparkles,
 } from 'lucide-react';
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
@@ -126,6 +127,47 @@ export const RekamMedis: React.FC<Props> = ({
     return activeQueueMap.get(selectedPetId);
   }, [activeQueueMap, selectedPetId]);
 
+  // Patient Search Panel State in Form Tab
+  const [patientSearchQuery, setPatientSearchQuery] = useState('');
+  const [isPatientSearchOpen, setIsPatientSearchOpen] = useState(false);
+  const patientSearchRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (patientSearchRef.current && !patientSearchRef.current.contains(event.target as Node)) {
+        setIsPatientSearchOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredPatientsForSelector = useMemo(() => {
+    const q = patientSearchQuery.trim().toLowerCase();
+
+    if (!q) {
+      const queuePetIds = new Set(Array.from(activeQueueMap.keys()));
+      const inQueuePets = pets.filter((p) => queuePetIds.has(p.id));
+      const otherPets = pets.filter((p) => !queuePetIds.has(p.id));
+      return [...inQueuePets, ...otherPets].slice(0, 50);
+    }
+
+    return pets
+      .filter((p) => {
+        const queueInfo = activeQueueMap.get(p.id);
+        const petNameMatch = p.name?.toLowerCase().includes(q);
+        const ownerNameMatch = (p.ownerName || '').toLowerCase().includes(q);
+        const phoneMatch = (p.ownerWhatsapp || '').toLowerCase().includes(q);
+        const breedMatch = (p.breed || '').toLowerCase().includes(q);
+        const speciesMatch =
+          (p.type || '').toLowerCase().includes(q) || getPetTypeIndonesian(p.type).toLowerCase().includes(q);
+        const ticketMatch = queueInfo?.ticketNumber?.toLowerCase().includes(q);
+
+        return petNameMatch || ownerNameMatch || phoneMatch || breedMatch || speciesMatch || ticketMatch;
+      })
+      .slice(0, 100);
+  }, [pets, patientSearchQuery, activeQueueMap]);
+
   // Vital Signs Form State
   const [weight, setWeight] = useState<string>('');
   const [temperature, setTemperature] = useState<string>('');
@@ -153,6 +195,64 @@ export const RekamMedis: React.FC<Props> = ({
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
   const [serviceFee, setServiceFee] = useState<string>('50000');
   const [selectedVet, setSelectedVet] = useState<string>('drh. Arsi Kurniawan');
+
+  // Kirim Resume Pemeriksaan ke WhatsApp Pemilik
+  const handleSendWhatsappResume = () => {
+    if (!currentPet) {
+      alert('Silakan pilih pasien hewan terlebih dahulu.');
+      return;
+    }
+
+    const rawPhone = currentPet.ownerWhatsapp || activeQueueForPet?.ownerWhatsapp || '';
+    const phone = toWhatsappNumber(rawPhone);
+    if (!phone) {
+      alert('Nomor WhatsApp pemilik tidak ditemukan atau format nomor tidak valid.');
+      return;
+    }
+
+    const dateNow = formatDateTimeDisplay(new Date().toISOString());
+
+    const rxText = prescriptions.length > 0
+      ? prescriptions.map((p, i) => `${i + 1}. *${p.itemName}* (${p.quantity} ${p.unit})\n   👉 _Signa:_ ${p.dosage}`).join('\n')
+      : '- Tidak ada resep obat';
+
+    const message = `📋 *RESUME HASIL PEMERIKSAAN MEDIS*
+*VIER PET CARE*
+---------------------------------------
+🐾 *Pasien:* ${currentPet.name} (${getPetTypeIndonesian(currentPet.type)} • ${currentPet.breed || 'Mix'})
+👤 *Pemilik:* ${activeQueueForPet?.ownerName || currentPet.ownerName || currentPet.ownerWhatsapp || 'Klien'}
+🩺 *Dokter Pemeriksa:* ${selectedVet}
+📅 *Waktu:* ${dateNow}
+---------------------------------------
+📊 *Tanda-Tanda Vital:*
+• Berat Badan: ${weight ? `${weight} kg` : '-'}
+• Suhu Rektal: ${temperature ? `${temperature} °C` : '-'}
+• Heart Rate: ${heartRate ? `${heartRate} bpm` : '-'}
+• Resp. Rate: ${respiratoryRate ? `${respiratoryRate} rpm` : '-'}
+
+🩺 *Catatan Pemeriksaan Medis (SOAP):*
+*1. Anamnesa / Keluhan (Subjective):*
+${subjective || '-'}
+
+*2. Pemeriksaan Fisik (Objective):*
+${objective || '-'}
+
+*3. Diagnosa / Assessment:*
+${assessment || '-'}
+
+*4. Rencana Terapi / Plan:*
+${plan || '-'}
+
+💊 *Resep Obat & Terapi Farmasi:*
+${rxText}
+
+💰 *Biaya Layanan & Pemeriksaan:* Rp ${(parseFloat(serviceFee) || 0).toLocaleString('id-ID')}
+---------------------------------------
+Catatan ini dikirim resmi dari sistem klinik hewan *Vier Pet Care*. Semoga ${currentPet.name} lekas pulih dan sehat selalu! 🐾`;
+
+    const encodedMsg = encodeURIComponent(message);
+    window.open(`https://wa.me/${phone}?text=${encodedMsg}`, '_blank');
+  };
 
   // Update fields when pet changes in form
   useEffect(() => {
@@ -702,19 +802,28 @@ export const RekamMedis: React.FC<Props> = ({
       </div>
 
       {saveSuccessNotice && (
-        <div className="p-4 rounded-2xl bg-fuchsia-50 border border-fuchsia-200 text-fuchsia-900 text-xs font-bold flex items-center justify-between animate-in zoom-in-95 shadow-xs">
+        <div className="p-4 rounded-2xl bg-fuchsia-50 border border-fuchsia-200 text-fuchsia-900 text-xs font-bold flex flex-col sm:flex-row items-center justify-between gap-3 animate-in zoom-in-95 shadow-xs">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-5 h-5 text-fuchsia-700 shrink-0" />
             <span>
-              Rekam Medis SOAP Berhasil Disimpan! Stok obat farmasi telah dipotong otomatis dan berkas diagnosa penunjang tersimpan.
+              Rekam Medis SOAP Berhasil Disimpan! Stok obat farmasi telah dipotong otomatis.
             </span>
           </div>
-          <button
-            onClick={() => navigate('/admin/stok')}
-            className="underline hover:text-fuchsia-700 text-xs ml-3 font-semibold cursor-pointer shrink-0"
-          >
-            Cek Stok Obat →
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleSendWhatsappResume}
+              className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs inline-flex items-center gap-1.5 shadow-2xs cursor-pointer transition"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>📲 Kirim Resume WA</span>
+            </button>
+            <button
+              onClick={() => navigate('/admin/stok')}
+              className="underline hover:text-fuchsia-700 text-xs font-semibold cursor-pointer"
+            >
+              Cek Stok Obat →
+            </button>
+          </div>
         </div>
       )}
 
@@ -1361,30 +1470,177 @@ export const RekamMedis: React.FC<Props> = ({
       {/* ======================================================== */}
       {activeTab === 'form' && (
         <div className="space-y-6">
-          {/* Pet Selector Bar */}
-          <div className="bg-white rounded-2xl p-4 border border-neutral-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <PawPrint className="w-5 h-5 text-fuchsia-700" />
-              <label className="text-xs font-bold text-neutral-800">
-                Pilih Pasien yang Diperiksa:
-              </label>
+          {/* Patient Search Panel */}
+          <div
+            ref={patientSearchRef}
+            className="bg-white rounded-2xl p-4 sm:p-5 border border-neutral-200/80 shadow-xs space-y-3 relative"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-fuchsia-100 text-fuchsia-800 flex items-center justify-center shrink-0 border border-fuchsia-200 shadow-2xs">
+                  <PawPrint className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-xs sm:text-sm font-bold text-neutral-900 flex items-center gap-2">
+                    <span>Pilih / Cari Pasien yang Diperiksa</span>
+                    {currentPet && (
+                      <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <span>Pasien Dipilih</span>
+                      </span>
+                    )}
+                  </h3>
+                  <p className="text-[11px] text-neutral-500">
+                    Ketik nama pasien, nama pemilik, atau nomor HP/WhatsApp untuk mencari pasien
+                  </p>
+                </div>
+              </div>
+
+              {currentPet && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedPetId('');
+                    setPatientSearchQuery('');
+                    setIsPatientSearchOpen(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs font-bold transition flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5 text-neutral-500" />
+                  <span>Ganti / Cari Pasien Lain</span>
+                </button>
+              )}
             </div>
 
-            <select
-              value={selectedPetId}
-              onChange={(e) => setSelectedPetId(e.target.value)}
-              className="px-3.5 py-2 rounded-xl bg-neutral-50 border border-neutral-300 text-neutral-900 text-xs font-bold focus:ring-2 focus:ring-fuchsia-500 shadow-2xs cursor-pointer min-w-[260px]"
-            >
-              <option value="">-- Silakan Pilih Pasien Hewan --</option>
-              {pets.slice(0, 300).map((p) => {
-                const inQueue = activeQueueMap.get(p.id);
-                return (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({getPetTypeIndonesian(p.type)}) {inQueue ? `[Tiket: ${inQueue.ticketNumber}]` : ''} - {p.ownerWhatsapp || 'Klien'}
-                  </option>
-                );
-              })}
-            </select>
+            {/* Search Input Bar */}
+            <div className="relative">
+              <input
+                type="text"
+                value={patientSearchQuery}
+                onChange={(e) => {
+                  setPatientSearchQuery(e.target.value);
+                  setIsPatientSearchOpen(true);
+                }}
+                onFocus={() => setIsPatientSearchOpen(true)}
+                placeholder="🔍 Ketik nama pasien, nama pemilik, atau no. WhatsApp (contoh: Milo / Bu Rina / 0812)..."
+                className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-neutral-50 border border-neutral-300 text-neutral-900 placeholder-neutral-400 text-xs sm:text-sm font-medium focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500 shadow-2xs transition"
+              />
+              <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-3" />
+              {patientSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPatientSearchQuery('');
+                    setIsPatientSearchOpen(true);
+                  }}
+                  className="absolute right-3 top-2.5 text-neutral-400 hover:text-neutral-700 p-1 rounded-md cursor-pointer"
+                  title="Hapus pencarian"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* Floating Dropdown Results Panel */}
+              {isPatientSearchOpen && (
+                <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-white rounded-2xl border border-neutral-200/90 shadow-2xl overflow-hidden max-h-96 flex flex-col animate-in fade-in zoom-in-95 duration-150">
+                  {/* Summary Bar */}
+                  <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between text-[11px] font-bold text-neutral-500">
+                    <span>
+                      {patientSearchQuery
+                        ? `Hasil pencarian "${patientSearchQuery}" (${filteredPatientsForSelector.length} pasien)`
+                        : `Daftar Pasien Hewan (${filteredPatientsForSelector.length} teratas)`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsPatientSearchOpen(false)}
+                      className="text-[10px] text-fuchsia-700 hover:underline font-bold cursor-pointer"
+                    >
+                      Tutup [X]
+                    </button>
+                  </div>
+
+                  {/* Results List */}
+                  <div className="overflow-y-auto divide-y divide-neutral-100 p-1.5">
+                    {filteredPatientsForSelector.length === 0 ? (
+                      <div className="p-8 text-center text-neutral-500 space-y-2">
+                        <PawPrint className="w-8 h-8 text-neutral-300 mx-auto" />
+                        <p className="text-xs font-bold text-neutral-700">Pasien tidak ditemukan</p>
+                        <p className="text-[11px] text-neutral-400 max-w-xs mx-auto">
+                          Tidak ada pasien dengan kata kunci "{patientSearchQuery}". Coba masukkan nama pemilik atau no. telepon.
+                        </p>
+                      </div>
+                    ) : (
+                      filteredPatientsForSelector.map((p) => {
+                        const inQueue = activeQueueMap.get(p.id);
+                        const isSelected = selectedPetId === p.id;
+
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedPetId(p.id);
+                              setIsPatientSearchOpen(false);
+                            }}
+                            className={`w-full p-3 text-left rounded-xl transition flex items-center justify-between gap-3 cursor-pointer ${
+                              isSelected
+                                ? 'bg-fuchsia-50/90 border border-fuchsia-300'
+                                : 'hover:bg-neutral-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-10 h-10 rounded-xl bg-neutral-100 border border-neutral-200 flex items-center justify-center text-xl shrink-0 overflow-hidden shadow-2xs">
+                                {p.photoUrl ? (
+                                  <img src={p.photoUrl} alt={p.name} className="w-full h-full object-cover" />
+                                ) : (
+                                  getPetEmoji(p.type)
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-extrabold text-neutral-900 text-xs sm:text-sm tracking-tight">
+                                    {p.name}
+                                  </span>
+                                  <span className="text-[10px] font-bold bg-neutral-100 text-neutral-700 px-2 py-0.5 rounded-md border border-neutral-200 shrink-0">
+                                    {getPetTypeIndonesian(p.type)} • {p.breed || 'Mix'}
+                                  </span>
+                                  {inQueue && (
+                                    <span className="text-[10px] font-mono font-bold bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md border border-amber-300 shrink-0 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                                      Tiket: {inQueue.ticketNumber} ({inQueue.serviceType})
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-neutral-500 mt-0.5 truncate flex items-center gap-2">
+                                  <span>Pemilik: <strong className="text-neutral-800 font-semibold">{p.ownerName || 'Klien'}</strong></span>
+                                  <span>•</span>
+                                  <span className="font-mono text-fuchsia-800 font-semibold flex items-center gap-1">
+                                    <Phone className="w-3 h-3 text-fuchsia-600 inline" />
+                                    <span>{p.ownerWhatsapp || '-'}</span>
+                                  </span>
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {isSelected ? (
+                                <span className="text-xs font-bold text-fuchsia-800 bg-fuchsia-100 px-2.5 py-1 rounded-lg border border-fuchsia-200">
+                                  Dipilih ✓
+                                </span>
+                              ) : (
+                                <span className="text-xs font-bold text-fuchsia-700 bg-fuchsia-50 hover:bg-fuchsia-100 px-2.5 py-1 rounded-lg border border-fuchsia-200 transition">
+                                  Pilih Pasien →
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* STATE KOSONG: Belum Ada Pasien Dipilih */}
@@ -1904,14 +2160,25 @@ export const RekamMedis: React.FC<Props> = ({
                     </div>
                   )}
 
-                  {/* Submit */}
-                  <div className="mt-5 pt-4 border-t border-neutral-100 flex justify-end">
+                  {/* Submit & WhatsApp Action Bar */}
+                  <div className="mt-5 pt-4 border-t border-neutral-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={handleSendWhatsappResume}
+                      disabled={!currentPet}
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-md shadow-emerald-600/20 transition transform active:scale-98 cursor-pointer disabled:opacity-50"
+                      title="Kirim resume ringkasan pemeriksaan langsung ke WhatsApp pemilik"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>📲 Kirim Resume ke WhatsApp Pemilik</span>
+                    </button>
+
                     <button
                       type="submit"
-                      className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-bold text-xs shadow-xs transition transform active:scale-98 cursor-pointer"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-bold text-xs shadow-xs transition transform active:scale-98 cursor-pointer"
                     >
                       <Save className="w-4 h-4" />
-                      <span>Simpan Rekam Medis & Selesaikan Antrean</span>
+                      <span>Simpan Rekam Medis &amp; Selesaikan Antrean</span>
                     </button>
                   </div>
                 </div>
@@ -2082,6 +2349,7 @@ export const RekamMedis: React.FC<Props> = ({
           </div>
         </div>
       )}
+
     </div>
   );
 };

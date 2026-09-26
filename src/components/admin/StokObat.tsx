@@ -11,6 +11,8 @@ import {
   Calendar,
   Layers,
   ArrowUpRight,
+  Edit,
+  Trash2,
 } from 'lucide-react';
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
@@ -22,14 +24,63 @@ interface Props {
 }
 
 export const StokObat: React.FC<Props> = ({ navigate }) => {
-  const { inventory, restockItem, addInventoryItem, soapRecords } = useClinic();
+  const { inventory, restockItem, addInventoryItem, updateInventoryItem, deleteInventoryItem, soapRecords } = useClinic();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
-  // Restock modal
-  const [restockModalItem, setRestockModalItem] = useState<InventoryItem | null>(null);
-  const [restockQty, setRestockQty] = useState<number>(20);
+  // Edit Item modal
+  const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCat, setEditCat] = useState<InventoryItem['category']>('Antibiotik');
+  const [editBatch, setEditBatch] = useState('');
+  const [editExp, setEditExp] = useState('2027-06-30');
+  const [editMin, setEditMin] = useState<number>(15);
+  const [editQty, setEditQty] = useState<number>(50);
+  const [addQty, setAddQty] = useState<number>(0);
+  const [editUnit, setEditUnit] = useState('Tablet');
+  const [editPrice, setEditPrice] = useState<number>(10000);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const handleOpenEditModal = (item: InventoryItem) => {
+    setEditingItem(item);
+    setEditName(item.name || '');
+    setEditCat(item.category || 'Antibiotik');
+    setEditBatch(item.batchNo || '');
+    setEditExp(item.expireDate || '');
+    setEditMin(item.minThreshold || 0);
+    setEditQty(item.stockQuantity || 0);
+    setAddQty(0);
+    setEditUnit(item.unit || 'Tablet');
+    setEditPrice(item.price || 0);
+    setConfirmDeleteId(null);
+  };
+
+  const handleSaveEditItem = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingItem || !editName.trim()) return;
+
+    const finalStockQty = Math.max(0, Number(editQty) + Number(addQty));
+
+    updateInventoryItem(editingItem.id, {
+      name: editName.trim(),
+      category: editCat,
+      batchNo: editBatch.trim(),
+      expireDate: editExp,
+      minThreshold: Number(editMin),
+      stockQuantity: finalStockQty,
+      unit: editUnit.trim(),
+      price: Number(editPrice),
+      lastRestocked: Number(addQty) > 0 ? new Date().toISOString().split('T')[0] : editingItem.lastRestocked,
+    });
+
+    setEditingItem(null);
+  };
+
+  const handleDeleteItem = (itemId: string) => {
+    deleteInventoryItem(itemId);
+    setEditingItem(null);
+  };
 
   // New Item modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -74,13 +125,6 @@ export const StokObat: React.FC<Props> = ({ navigate }) => {
   }, [filteredItems, currentPage]);
 
   const lowStockItems = inventory.filter((i) => i.stockQuantity <= i.minThreshold);
-
-  const handleRestockSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!restockModalItem) return;
-    restockItem(restockModalItem.id, Number(restockQty));
-    setRestockModalItem(null);
-  };
 
   const handleAddNewItem = (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,13 +189,10 @@ export const StokObat: React.FC<Props> = ({ navigate }) => {
             {lowStockItems.slice(0, 2).map((item) => (
               <button
                 key={item.id}
-                onClick={() => {
-                  setRestockModalItem(item);
-                  setRestockQty(item.minThreshold * 2);
-                }}
-                className="px-2.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold text-[11px] border border-rose-300 transition"
+                onClick={() => handleOpenEditModal(item)}
+                className="px-2.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold text-[11px] border border-rose-300 transition cursor-pointer"
               >
-                Restock {item.name.split(' ')[0]} +
+                Edit {item.name.split(' ')[0]} ✏️
               </button>
             ))}
           </div>
@@ -282,17 +323,16 @@ export const StokObat: React.FC<Props> = ({ navigate }) => {
                         </span>
                       </td>
 
-                      {/* Actions: Restock */}
-                      <td className="px-4 py-3 text-right">
+                      {/* Actions: Edit */}
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
                         <button
-                          onClick={() => {
-                            setRestockModalItem(item);
-                            setRestockQty(item.minThreshold);
-                          }}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-semibold border border-neutral-200 transition"
+                          type="button"
+                          onClick={() => handleOpenEditModal(item)}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-extrabold border border-amber-200/90 transition shadow-2xs cursor-pointer"
+                          title="Edit nama obat, harga, batch & tambah stok"
                         >
-                          <RefreshCw className="w-3 h-3 text-fuchsia-700" />
-                          <span>+ Restock</span>
+                          <Edit className="w-3.5 h-3.5 text-amber-700" />
+                          <span>Edit</span>
                         </button>
                       </td>
                     </tr>
@@ -329,59 +369,7 @@ export const StokObat: React.FC<Props> = ({ navigate }) => {
         </div>
       )}
 
-      {/* RESTOCK MODAL */}
-      {restockModalItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/60 backdrop-blur-xs p-4">
-          <div className="bg-white border border-neutral-200 rounded-2xl shadow-xl max-w-sm w-full p-6 text-neutral-900 animate-in zoom-in-95">
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-100 mb-4">
-              <h3 className="font-bold text-base text-neutral-900">Restock {restockModalItem.name}</h3>
-              <button
-                onClick={() => setRestockModalItem(null)}
-                className="text-neutral-400 hover:text-neutral-700"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            <form onSubmit={handleRestockSubmit} className="space-y-4 text-xs">
-              <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200 space-y-1">
-                <p className="text-neutral-500">Stok Saat Ini: <strong className="text-neutral-900 font-mono">{restockModalItem.stockQuantity} {restockModalItem.unit}</strong></p>
-                <p className="text-neutral-500">Batas Minimum: <span className="font-mono text-neutral-700">{restockModalItem.minThreshold} {restockModalItem.unit}</span></p>
-              </div>
-
-              <div>
-                <label className="block text-neutral-700 font-semibold mb-1">
-                  Jumlah Penambahan ({restockModalItem.unit})
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  value={restockQty}
-                  onChange={(e) => setRestockQty(parseInt(e.target.value, 10) || 1)}
-                  className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-mono text-sm font-bold focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-neutral-100">
-                <button
-                  type="button"
-                  onClick={() => setRestockModalItem(null)}
-                  className="px-4 py-2 rounded-xl border border-neutral-200 text-neutral-700 hover:bg-neutral-50"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-bold shadow-xs"
-                >
-                  Tambah Stok
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* ADD NEW ITEM MODAL */}
       {showAddModal && (
@@ -506,6 +494,211 @@ export const StokObat: React.FC<Props> = ({ navigate }) => {
                 >
                   Simpan Item
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT ITEM MODAL */}
+      {editingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/60 backdrop-blur-xs p-4">
+          <div className="bg-white border border-neutral-200 rounded-2xl shadow-xl max-w-lg w-full p-6 text-neutral-900 animate-in zoom-in-95 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold">
+                  <Edit className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-neutral-900">Edit Data Item / Obat</h3>
+                  <p className="text-[11px] text-neutral-500">Ubah nama obat, harga, kategori, atau kuantitas stok</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingItem(null)}
+                className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditItem} className="space-y-4 text-xs">
+              {/* Nama Item / Obat */}
+              <div>
+                <label className="block text-neutral-800 font-bold mb-1">
+                  Nama Item / Obat <span className="text-rose-600">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Nama obat..."
+                  className="w-full px-3.5 py-2 rounded-xl bg-neutral-50 border border-neutral-300 text-neutral-900 font-bold text-sm focus:bg-white focus:ring-2 focus:ring-fuchsia-500 shadow-2xs"
+                />
+              </div>
+
+              {/* Kategori & Satuan */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-700 font-semibold mb-1">Kategori</label>
+                  <select
+                    value={editCat}
+                    onChange={(e) => setEditCat(e.target.value as any)}
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-medium focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
+                  >
+                    {categories.filter((c) => c !== 'all').map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-neutral-700 font-semibold mb-1">Satuan</label>
+                  <input
+                    type="text"
+                    required
+                    value={editUnit}
+                    onChange={(e) => setEditUnit(e.target.value)}
+                    placeholder="Tablet / Botol / Ampul"
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-medium focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
+                  />
+                </div>
+              </div>
+
+              {/* Batch & Kadaluarsa */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-700 font-semibold mb-1">No. Batch</label>
+                  <input
+                    type="text"
+                    value={editBatch}
+                    onChange={(e) => setEditBatch(e.target.value)}
+                    placeholder="Contoh: BAT-12345"
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-mono focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-700 font-semibold mb-1">Kadaluarsa (EXP)</label>
+                  <input
+                    type="date"
+                    required
+                    value={editExp}
+                    onChange={(e) => setEditExp(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-mono focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
+                  />
+                </div>
+              </div>
+
+              {/* Safety Min & Harga Jual */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-700 font-semibold mb-1">Batas Min. Safety</label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    value={editMin}
+                    onChange={(e) => setEditMin(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-mono focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-700 font-semibold mb-1">Harga Satuan (Rp)</label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    value={editPrice}
+                    onChange={(e) => setEditPrice(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 font-mono font-bold focus:bg-white focus:ring-2 focus:ring-fuchsia-500"
+                  />
+                </div>
+              </div>
+
+              {/* STOK CONTROL MATRIX (Ubah Stok Saat Ini OR Restock Tambah Stok) */}
+              <div className="p-3.5 rounded-2xl bg-fuchsia-50/70 border border-fuchsia-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-extrabold text-fuchsia-950 text-xs flex items-center gap-1.5">
+                    <Package className="w-4 h-4 text-fuchsia-700" />
+                    Manajemen &amp; Penambahan Stok Obat
+                  </span>
+                  <span className="text-[10px] font-mono font-bold bg-white px-2 py-0.5 rounded-md border border-fuchsia-200 text-fuchsia-900">
+                    Total Nanti: {Math.max(0, Number(editQty) + Number(addQty))} {editUnit}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-neutral-700 font-semibold mb-1">Stok Saat Ini</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={editQty}
+                      onChange={(e) => setEditQty(parseInt(e.target.value, 10) || 0)}
+                      className="w-full px-3 py-2 rounded-xl bg-white border border-neutral-300 text-neutral-900 font-mono font-bold focus:ring-2 focus:ring-fuchsia-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-fuchsia-900 font-bold mb-1">+ Tambah Stok Baru (Restock)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={addQty}
+                      onChange={(e) => setAddQty(parseInt(e.target.value, 10) || 0)}
+                      placeholder="+0"
+                      className="w-full px-3 py-2 rounded-xl bg-white border border-fuchsia-300 text-fuchsia-900 font-mono font-extrabold focus:ring-2 focus:ring-fuchsia-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-between pt-3 border-t border-neutral-100">
+                {confirmDeleteId === editingItem.id ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-rose-700 font-bold">Yakin hapus obat ini?</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteItem(editingItem.id)}
+                      className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold text-[11px]"
+                    >
+                      Ya, Hapus
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteId(null)}
+                      className="px-2.5 py-1 bg-neutral-200 text-neutral-700 rounded-lg text-[11px]"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteId(editingItem.id)}
+                    className="px-3 py-1.5 rounded-xl text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-200 font-bold text-xs inline-flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Hapus Item</span>
+                  </button>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingItem(null)}
+                    className="px-4 py-2 rounded-xl border border-neutral-200 text-neutral-700 font-bold hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-800 text-white font-extrabold shadow-md shadow-fuchsia-700/20 transition cursor-pointer"
+                  >
+                    Simpan Perubahan
+                  </button>
+                </div>
               </div>
             </form>
           </div>

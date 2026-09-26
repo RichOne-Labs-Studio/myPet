@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { syncManager } from './src/server/syncService.ts';
+import { analyzeVeterinarySoap } from './src/server/veterinaryAiService.ts';
 
 dotenv.config();
 
@@ -16,6 +17,26 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 // Body parser dengan limit besar untuk menangani volume data masif
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: true, limit: '60mb' }));
+
+// ==========================================
+// VETERINARY AI CDSS / CO-PILOT API ROUTE
+// ==========================================
+app.post('/api/ai/veterinary-cdss', async (req, res) => {
+  try {
+    const { subjective = '', objective = '', patientInfo = {} } = req.body;
+    const analysis = await analyzeVeterinarySoap({ subjective, objective, patientInfo });
+    res.json({
+      success: true,
+      data: analysis,
+    });
+  } catch (err: any) {
+    console.error('[API /api/ai/veterinary-cdss] Error:', err);
+    res.status(500).json({
+      success: false,
+      message: err.message || 'Gagal memproses analisis klinis AI.',
+    });
+  }
+});
 
 // ==========================================
 // BACKEND SYNC API ROUTES

@@ -222,6 +222,8 @@ interface ClinicContextType {
   dischargeCage: (cageId: string) => void;
   restockItem: (itemId: string, addedQuantity: number) => void;
   addInventoryItem: (item: Omit<InventoryItem, 'id' | 'lastRestocked'>) => void;
+  updateInventoryItem: (itemId: string, updatedData: Partial<InventoryItem>) => void;
+  deleteInventoryItem: (itemId: string) => void;
   addBooking: (booking: Omit<BookingAppointment, 'id'>) => void;
   updateBookingStatus: (id: string, status: BookingAppointment['status']) => void;
   addFeedback: (feedback: Omit<CustomerFeedback, 'id' | 'submittedAt'>) => void;
@@ -1983,6 +1985,16 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setInventory((prev) => [newItem, ...prev]);
   };
 
+  const updateInventoryItem = (itemId: string, updatedData: Partial<InventoryItem>) => {
+    setInventory((prev) =>
+      prev.map((item) => (item.id === itemId ? { ...item, ...updatedData } : item))
+    );
+  };
+
+  const deleteInventoryItem = (itemId: string) => {
+    setInventory((prev) => prev.filter((item) => item.id !== itemId));
+  };
+
   // ==========================================
   // BOOKING APPOINTMENTS
   // ==========================================
@@ -2299,6 +2311,8 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         dischargeCage,
         restockItem,
         addInventoryItem,
+        updateInventoryItem,
+        deleteInventoryItem,
         addBooking,
         updateBookingStatus,
         addFeedback,
