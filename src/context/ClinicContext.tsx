@@ -728,6 +728,8 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Versi backend lokal untuk mendeteksi pembaruan data secara otomatis
   const localBackendVersionRef = useRef<number>(0);
+  // Prevent duplicate initial bootstrap requests when React development StrictMode mounts the provider twice.
+  const initialLoadStartedRef = useRef(false);
 
   // 1. Initial Load
   // Small dataset: gunakan cache + full sync seperti sebelumnya.
@@ -852,6 +854,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     async function loadInitial() {
+      // React StrictMode can invoke effects twice during development. Only the first invocation may start the authoritative startup read sequence.
+      if (initialLoadStartedRef.current) return;
+      initialLoadStartedRef.current = true;
+
       // PRODUCTION STATIC HOST: read Google Sheets first and directly.
       // Local IndexedDB/cache must never win over the latest Spreadsheet data.
       if (isStaticHost) {
@@ -1167,16 +1173,37 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Google Sheets is the production source of truth.
     if (isStaticHost && spreadsheetConfig.webAppUrl) {
       try {
-        const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
-        if (directRes.success && directRes.data) {
-          hasInitialSyncedRef.current = true;
-          importDatabase(directRes.data);
-          const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
-          setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
-          setSyncStatus('connected');
-          const msg = 'Data terbaru berhasil dibaca langsung dari Google Sheets pada ' + nowStr + ' WIB';
-          if (!silent) setLastSyncMessage(msg);
-          return { success: true, message: msg };
+        if (isLargeDataMode) {
+          const criticalTables: Array<keyof SpreadsheetDatabaseSchema> = [
+            'owners', 'pets', 'queues', 'cages', 'bookings', 'staff', 'inventory', 'feedbacks'
+          ];
+          const batchRes = await pullTablesBatchFromSpreadsheet(
+            spreadsheetConfig.webAppUrl,
+            criticalTables,
+            100
+          );
+          if (batchRes.success && batchRes.data) {
+            hasInitialSyncedRef.current = true;
+            importDatabase(batchRes.data);
+            const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+            setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+            setSyncStatus('connected');
+            const msg = 'Working set terbaru berhasil dibaca dari Google Sheets pada ' + nowStr + ' WIB';
+            if (!silent) setLastSyncMessage(msg);
+            return { success: true, message: msg };
+          }
+        } else {
+          const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
+          if (directRes.success && directRes.data) {
+            hasInitialSyncedRef.current = true;
+            importDatabase(directRes.data);
+            const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+            setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+            setSyncStatus('connected');
+            const msg = 'Data terbaru berhasil dibaca langsung dari Google Sheets pada ' + nowStr + ' WIB';
+            if (!silent) setLastSyncMessage(msg);
+            return { success: true, message: msg };
+          }
         }
       } catch (err) {
         console.warn('Pembacaan langsung Google Sheets gagal:', err);
