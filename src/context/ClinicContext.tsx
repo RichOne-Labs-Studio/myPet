@@ -954,7 +954,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Polling berkala (5s jika ada backend, atau 30s jika static)
     const intervalId = setInterval(poll, 10000);
     return () => clearInterval(intervalId);
-  }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl]);
+  }, [spreadsheetConfig.isConnected, spreadsheetConfig.autoSync, spreadsheetConfig.webAppUrl, isLargeDataMode]);
 
   // Sync with IndexedDB & session storage
   useEffect(() => { saveStored(STORAGE_KEYS.OWNERS, owners); }, [owners]);
