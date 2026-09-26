@@ -59,7 +59,7 @@ export function objectsToCSV<T extends Record<string, any>>(data: T[]): string {
         }
         val = String(val).replace(/"/g, '""');
         if (val.includes(',') || val.includes('\n') || val.includes('"')) {
-          val = `"${val}"`;
+          val = '"' + val + '"';
         }
         return val;
       })
@@ -439,7 +439,7 @@ export async function pullTableFromSpreadsheet(
         total: Number(json.total ?? json.count ?? records.length),
         page: Number(json.page ?? Math.floor(offset / (limit || records.length || 1)) + 1),
         limit: Number(json.limit ?? limit ?? records.length),
-        totalPages: Number(json.totalPages ?? 0) || Math.max(1, Math.ceil(Number(json.total ?? json.count ?? records.length) / Number(json.limit ?? limit ?? records.length || 1))),
+        totalPages: Number(json.totalPages ?? 0) || Math.max(1, Math.ceil(Number(json.total ?? json.count ?? records.length) / Number(json.limit ?? limit ?? (records.length || 1)))),
       };
     }
 
