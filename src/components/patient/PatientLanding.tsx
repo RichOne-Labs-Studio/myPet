@@ -380,39 +380,6 @@ export const PatientLanding: React.FC<PatientLandingProps> = ({ navigate }) => {
           </button>
         </div>
 
-        {/* Feature Highlights */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-3xl mt-14 pt-8 border-t border-neutral-200/80 text-left">
-          <div className="flex items-start gap-3 p-3">
-            <div className="w-9 h-9 rounded-lg bg-fuchsia-50 text-fuchsia-600 flex items-center justify-center shrink-0 border border-fuchsia-100">
-              <Stethoscope className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-neutral-900">Dokter Berpengalaman</h4>
-              <p className="text-xs text-neutral-500 mt-0.5">Penanganan medis komprehensif didukung rekam medis elektronik.</p>
-            </div>
-          </div>
-
-          <div className="flex items-start gap-3 p-3">
-            <div className="w-9 h-9 rounded-lg bg-fuchsia-50 text-fuchsia-600 flex items-center justify-center shrink-0 border border-fuchsia-100">
-              <Clock className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-neutral-900">Antrean Terpantau</h4>
-              <p className="text-xs text-neutral-500 mt-0.5">Pembaruan estimasi waktu langsung via smartphone.</p>
-            </div>
-          </div>
-
-          <div className="flex items-start gap-3 p-3">
-            <div className="w-9 h-9 rounded-lg bg-fuchsia-50 text-fuchsia-600 flex items-center justify-center shrink-0 border border-fuchsia-100">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-neutral-900">Klinik Higienis</h4>
-              <p className="text-xs text-neutral-500 mt-0.5">Ruang rawat inap & poli steril dengan standar biosafety.</p>
-            </div>
-          </div>
-        </div>
-
         {/* Kotak Saran & Masukan Pasien */}
         <div id="kotak-saran-pasien" className="w-full max-w-3xl mt-12 bg-white rounded-3xl p-6 sm:p-8 border border-neutral-200 shadow-sm text-left">
           <div className="flex items-center gap-3 pb-4 border-b border-neutral-100 mb-6">
