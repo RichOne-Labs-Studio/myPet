@@ -275,9 +275,7 @@ export const AdminLayout: React.FC<Props> = ({ currentRoute, navigate, children 
 
             <div>
               <h1 className="text-base sm:text-lg font-extrabold text-neutral-900 tracking-tight">
-                {currentRoute === '/admin/dashboard' || currentRoute === '/admin'
-                  ? 'myPet'
-                  : navItems.find((n) => n.route === currentRoute)?.label || 'myPet'}
+                myPet
               </h1>
               <p className="text-[11px] text-neutral-500">
                 Sistem Manajemen Klinik Hewan Terpadu
