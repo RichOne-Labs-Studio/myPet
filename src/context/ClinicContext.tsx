@@ -703,6 +703,14 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isLargeDataMode, setIsLargeDataMode] = useState(false);
   const LARGE_DATA_THRESHOLD = 20000;
 
+  // GitHub Pages is the production static host. On static hosting, Google Sheets
+  // via Apps Script is the single source of truth for READ operations.
+  const isStaticHost =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.endsWith('.github.io') ||
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1');
+
   // Versi backend lokal untuk mendeteksi pembaruan data secara otomatis
   const localBackendVersionRef = useRef<number>(0);
 
@@ -773,7 +781,9 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     async function loadFromStaticSpreadsheet() {
-      if (!spreadsheetConfig.webAppUrl || !spreadsheetConfig.isConnected) return false;
+      // Do not gate this by local connection/cache state. The Apps Script URL is
+      // the authoritative READ source on static hosting.
+      if (!spreadsheetConfig.webAppUrl) return false;
 
       try {
         const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
@@ -816,6 +826,13 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     async function loadInitial() {
+      // PRODUCTION STATIC HOST: read Google Sheets first and directly.
+      // Local IndexedDB/cache must never win over the latest Spreadsheet data.
+      if (isStaticHost) {
+        const loadedFromSpreadsheet = await loadFromStaticSpreadsheet();
+        if (loadedFromSpreadsheet) return;
+      }
+
       // Prioritaskan status remote sebelum membaca cache besar.
       try {
         let status = await fetchStatusFromBackend();
@@ -1117,9 +1134,30 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const syncFromSpreadsheet = async (silent: boolean = false): Promise<{ success: boolean; message: string }> => {
     if (!silent) {
       setSyncStatus('syncing');
-      setLastSyncMessage('Menyinkronkan data otomatis dengan backend & Google Sheets...');
+      setLastSyncMessage('Membaca data terbaru langsung dari Google Sheets...');
     }
 
+    // On GitHub Pages, bypass Express/backend/cache completely for READs.
+    // Google Sheets is the production source of truth.
+    if (isStaticHost && spreadsheetConfig.webAppUrl) {
+      try {
+        const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
+        if (directRes.success && directRes.data) {
+          hasInitialSyncedRef.current = true;
+          importDatabase(directRes.data);
+          const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+          setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+          setSyncStatus('connected');
+          const msg = 'Data terbaru berhasil dibaca langsung dari Google Sheets pada ' + nowStr + ' WIB';
+          if (!silent) setLastSyncMessage(msg);
+          return { success: true, message: msg };
+        }
+      } catch (err) {
+        console.warn('Pembacaan langsung Google Sheets gagal:', err);
+      }
+    }
+
+    // Development/non-static fallback: backend sync remains available.
     // 1. Picu proses sinkronisasi background di server
     triggerBackendSync().catch(() => {});
 
@@ -1207,7 +1245,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           hasChanged = true;
         }
       }
-      if (hasChanged || current.length === 0) {
+      // Every remote import is authoritative. Even when length/first/last IDs
+      // are unchanged, a row in the middle may have been edited in Sheets.
+      // Never let stale IndexedDB/state survive a successful Spreadsheet READ.
+      if (hasChanged || current.length === 0 || incoming.length === current.length) {
         isRemoteSyncRef.current = true;
         setter(incoming);
         setTimeout(() => {
