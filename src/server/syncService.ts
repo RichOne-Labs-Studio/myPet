@@ -9,7 +9,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const DB_FILE = path.join(DATA_DIR, 'clinic_database.json');
+const STORAGE_META_FILE = path.join(DATA_DIR, 'clinic_database_meta.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'sync_config.json');
+
+// Stage 5: persistence dipisah per tabel agar perubahan satu tabel tidak lagi
+// men-serialize seluruh database ke satu file JSON raksasa.
+const TABLE_FILES: Record<keyof ClinicDatabase, string> = {
+  owners: path.join(DATA_DIR, 'owners.json'),
+  pets: path.join(DATA_DIR, 'pets.json'),
+  queues: path.join(DATA_DIR, 'queues.json'),
+  soapRecords: path.join(DATA_DIR, 'soapRecords.json'),
+  cages: path.join(DATA_DIR, 'cages.json'),
+  inventory: path.join(DATA_DIR, 'inventory.json'),
+  bookings: path.join(DATA_DIR, 'bookings.json'),
+  staff: path.join(DATA_DIR, 'staff.json'),
+  feedbacks: path.join(DATA_DIR, 'feedbacks.json'),
+};
+
+const TABLE_NAMES = Object.keys(TABLE_FILES) as Array<keyof ClinicDatabase>;
 
 export const DEFAULT_WEB_APP_URL =
   'https://script.google.com/macros/s/AKfycbyx7QzGHB3gfH-YOXOSWKnAWX3wu_xAoKU6Hiog_vEJUaUg6D14pFiz8j9LgoWVP-A72g/exec';
@@ -160,46 +177,100 @@ class ServerSyncManager {
 
   private loadDatabaseFromDisk() {
     try {
+      // Prefer Stage 5 split storage once the metadata marker exists.
+      if (fs.existsSync(STORAGE_META_FILE)) {
+        const meta = JSON.parse(fs.readFileSync(STORAGE_META_FILE, 'utf-8'));
+        if (meta.storageVersion === 2) {
+          for (const table of TABLE_NAMES) {
+            const file = TABLE_FILES[table];
+            if (!fs.existsSync(file)) throw new Error(`File tabel ${table} tidak ditemukan.`);
+            const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+            this.db[table] = Array.isArray(parsed) ? parsed : [];
+          }
+          this.lastSyncedAt = meta.lastSyncedAt || null;
+          this.version = Number(meta.version) || 1;
+          this.isConnected = true;
+          this.updateCounts();
+          console.log(`[ServerSync] Memuat split storage Stage 5: ${this.getTotalRecords()} total records.`);
+          return;
+        }
+      }
+
+      // Backward-compatible migration from the previous single-file database.
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        this.db = {
-          owners: Array.isArray(parsed.owners) ? parsed.owners : [],
-          pets: Array.isArray(parsed.pets) ? parsed.pets : [],
-          queues: Array.isArray(parsed.queues) ? parsed.queues : [],
-          soapRecords: Array.isArray(parsed.soapRecords) ? parsed.soapRecords : [],
-          cages: Array.isArray(parsed.cages) ? parsed.cages : [],
-          inventory: Array.isArray(parsed.inventory) ? parsed.inventory : [],
-          bookings: Array.isArray(parsed.bookings) ? parsed.bookings : [],
-          staff: Array.isArray(parsed.staff) ? parsed.staff : [],
-          feedbacks: Array.isArray(parsed.feedbacks) ? parsed.feedbacks : [],
-        };
+        for (const table of TABLE_NAMES) {
+          this.db[table] = Array.isArray(parsed[table]) ? parsed[table] : [];
+        }
         this.lastSyncedAt = parsed._lastSyncedAt || null;
-        this.version = parsed._version || 1;
+        this.version = Number(parsed._version) || 1;
         this.isConnected = true;
         this.updateCounts();
-        console.log(`[ServerSync] Memuat cache disk: ${this.getTotalRecords()} total records.`);
+        this.migrateLegacyDatabaseToSplitStorage();
+        console.log(`[ServerSync] Migrasi database lama ke split storage: ${this.getTotalRecords()} total records.`);
       }
     } catch (err: any) {
-      console.warn('[ServerSync] Cache disk kosong atau gagal dibaca:', err.message);
+      console.warn('[ServerSync] Cache split/legacy kosong atau gagal dibaca:', err.message);
     }
   }
 
-  private saveDatabaseToDisk() {
+  private migrateLegacyDatabaseToSplitStorage() {
     try {
       this.ensureDataDirectory();
-      const payload = {
-        ...this.db,
-        _lastSyncedAt: this.lastSyncedAt,
-        _version: this.version,
-        _counts: this.getCounts(),
-      };
-      fs.writeFile(DB_FILE, JSON.stringify(payload), 'utf-8', (err) => {
-        if (err) console.error('[ServerSync] Gagal menulis ke disk:', err.message);
-      });
+      for (const table of TABLE_NAMES) {
+        fs.writeFileSync(TABLE_FILES[table], JSON.stringify(this.db[table]), 'utf-8');
+      }
+      fs.writeFileSync(
+        STORAGE_META_FILE,
+        JSON.stringify({ storageVersion: 2, lastSyncedAt: this.lastSyncedAt, version: this.version, counts: this.getCounts() }),
+        'utf-8'
+      );
+      console.log('[ServerSync] Migrasi Stage 5 selesai. clinic_database.json lama dipertahankan sebagai backup.');
     } catch (err: any) {
-      console.error('[ServerSync] Gagal serialisasi db:', err.message);
+      console.error('[ServerSync] Gagal migrasi ke split storage:', err.message);
     }
+  }
+
+  private diskWriteQueue: Promise<void> = Promise.resolve();
+  private pendingDiskTables = new Set<keyof ClinicDatabase>();
+  private diskSaveTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Jadwalkan persistence dengan debounce singkat. Burst perubahan dalam satu periode
+   * hanya menulis snapshot terbaru tiap tabel, bukan menulis seluruh database berkali-kali.
+   */
+  private saveDatabaseToDisk(tables: Array<keyof ClinicDatabase> = TABLE_NAMES) {
+    for (const table of tables) this.pendingDiskTables.add(table);
+    if (this.diskSaveTimer) return;
+
+    this.diskSaveTimer = setTimeout(() => {
+      this.diskSaveTimer = null;
+      const pendingTables = Array.from(this.pendingDiskTables);
+      this.pendingDiskTables.clear();
+      const snapshots = pendingTables.map((table) => ({
+        table,
+        payload: JSON.stringify(this.db[table]),
+      }));
+      const metaPayload = JSON.stringify({
+        storageVersion: 2,
+        lastSyncedAt: this.lastSyncedAt,
+        version: this.version,
+        counts: this.getCounts(),
+      });
+
+      this.diskWriteQueue = this.diskWriteQueue.then(async () => {
+        try {
+          this.ensureDataDirectory();
+          await Promise.all(snapshots.map(({ table, payload }) =>
+            fs.promises.writeFile(TABLE_FILES[table], payload, 'utf-8')
+          ));
+          await fs.promises.writeFile(STORAGE_META_FILE, metaPayload, 'utf-8');
+        } catch (err: any) {
+          console.error('[ServerSync] Gagal menulis split storage:', err.message);
+        }
+      });
+    }, 250);
   }
 
   private updateCounts() {
