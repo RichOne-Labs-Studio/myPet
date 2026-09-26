@@ -1198,7 +1198,7 @@ export function objectsToCSV<T extends Record<string, any>>(data: T[]): string {
         }
         val = String(val).replace(/"/g, '""');
         if (val.includes(',') || val.includes('\n') || val.includes('"')) {
-          val = `"${val}"`;
+          val = '"' + val + '"';
         }
         return val;
       })
