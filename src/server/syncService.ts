@@ -176,26 +176,36 @@ class ServerSyncManager {
   }
 
   private loadDatabaseFromDisk() {
+    // Stage 5 storage is preferred, but a legacy single-file backup remains as
+    // a recovery path if the split storage is incomplete/corrupt.
+    let splitLoaded = false;
     try {
-      // Prefer Stage 5 split storage once the metadata marker exists.
       if (fs.existsSync(STORAGE_META_FILE)) {
         const meta = JSON.parse(fs.readFileSync(STORAGE_META_FILE, 'utf-8'));
         if (meta.storageVersion === 2) {
+          const loaded: Partial<ClinicDatabase> = {};
           for (const table of TABLE_NAMES) {
             const file = TABLE_FILES[table];
             if (!fs.existsSync(file)) throw new Error(`File tabel ${table} tidak ditemukan.`);
             const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-            this.db[table] = Array.isArray(parsed) ? parsed : [];
+            loaded[table] = Array.isArray(parsed) ? parsed : [];
           }
+          this.db = loaded as ClinicDatabase;
           this.lastSyncedAt = meta.lastSyncedAt || null;
           this.version = Number(meta.version) || 1;
           this.isConnected = true;
           this.updateCounts();
+          splitLoaded = true;
           console.log(`[ServerSync] Memuat split storage Stage 5: ${this.getTotalRecords()} total records.`);
-          return;
         }
       }
+    } catch (err: any) {
+      console.warn('[ServerSync] Split storage tidak dapat dipakai, mencoba backup legacy:', err.message);
+    }
 
+    if (splitLoaded) return;
+
+    try {
       // Backward-compatible migration from the previous single-file database.
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
@@ -214,7 +224,6 @@ class ServerSyncManager {
       console.warn('[ServerSync] Cache split/legacy kosong atau gagal dibaca:', err.message);
     }
   }
-
   private migrateLegacyDatabaseToSplitStorage() {
     try {
       this.ensureDataDirectory();
