@@ -806,6 +806,13 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const ping = await testSpreadsheetConnection(spreadsheetConfig.webAppUrl);
         const total = totalFromCounts(ping.counts);
 
+        // Establish the polling baseline from the same startup ping.
+        // Without this, the first 10-second fallback poll sees a null baseline
+        // and immediately triggers a second batch startup sync even when nothing changed.
+        if (ping.success && ping.counts) {
+          pollCountsRef.current = ping.counts;
+        }
+
         // Stage 7.2 runtime guard:
         // Do not rely only on ping counts to decide whether Batch Read is needed.
         // Some Apps Script deployments can return incomplete/stale count metadata.
