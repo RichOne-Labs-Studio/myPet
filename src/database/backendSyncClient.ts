@@ -13,6 +13,12 @@ import {
   FINAL_SPREADSHEET_URL,
 } from './spreadsheetDb';
 
+const isStaticHost = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return host.endsWith('.github.io') || host === 'localhost' || host === '127.0.0.1';
+};
+
 export interface BackendSyncStatus {
   isConnected: boolean;
   isSyncing: boolean;
@@ -29,6 +35,7 @@ export async function fetchDatabaseFromBackend(): Promise<{
   status?: BackendSyncStatus;
   message?: string;
 }> {
+  if (isStaticHost()) return { success: false, message: 'Static host without backend' };
   try {
     const res = await fetch('/api/sync/data', {
       method: 'GET',
@@ -65,6 +72,7 @@ export async function fetchBootstrapFromBackend(options: { perTable?: number } =
   status?: BackendSyncStatus;
   message?: string;
 }> {
+  if (isStaticHost()) return { success: false, message: 'Static host without backend' };
   try {
     const perTable = Math.min(200, Math.max(25, Number(options.perTable) || 100));
     const res = await fetch('/api/sync/bootstrap?limit=' + perTable, {
@@ -87,6 +95,7 @@ export async function fetchBootstrapFromBackend(options: { perTable?: number } =
 }
 
 export async function fetchStatusFromBackend(): Promise<BackendSyncStatus | null> {
+  if (isStaticHost()) return null;
   try {
     const res = await fetch('/api/sync/status', {
       method: 'GET',
@@ -103,6 +112,7 @@ export async function fetchStatusFromBackend(): Promise<BackendSyncStatus | null
 }
 
 export async function triggerBackendSync(): Promise<boolean> {
+  if (isStaticHost()) return false;
   try {
     const res = await fetch('/api/sync/trigger', {
       method: 'POST',
@@ -115,6 +125,11 @@ export async function triggerBackendSync(): Promise<boolean> {
 }
 
 export async function pushRecordToBackend(table: string, record: any, webAppUrl?: string): Promise<boolean> {
+  if (isStaticHost()) {
+    const targetUrl = webAppUrl || FINAL_SPREADSHEET_URL;
+    if (targetUrl) { pushSingleRecordToSpreadsheet(targetUrl, table as any, record).catch(() => {}); return true; }
+    return false;
+  }
   try {
     const res = await fetch('/api/sync/record', {
       method: 'POST',
@@ -136,6 +151,7 @@ export async function pushRecordToBackend(table: string, record: any, webAppUrl?
 }
 
 export async function deleteRecordFromBackend(table: string, id: string, webAppUrl?: string): Promise<boolean> {
+  if (isStaticHost()) return false;
   try {
     const res = await fetch('/api/sync/delete', {
       method: 'POST',
@@ -150,6 +166,11 @@ export async function deleteRecordFromBackend(table: string, id: string, webAppU
 }
 
 export async function pushTableToBackend(table: string, records: any[], webAppUrl?: string): Promise<boolean> {
+  if (isStaticHost()) {
+    const targetUrl = webAppUrl || FINAL_SPREADSHEET_URL;
+    if (targetUrl) { pushTableToSpreadsheet(targetUrl, table as any, records).catch(() => {}); return true; }
+    return false;
+  }
   try {
     const res = await fetch('/api/sync/table', {
       method: 'POST',
@@ -170,6 +191,7 @@ export async function pushTableToBackend(table: string, records: any[], webAppUr
 }
 
 export async function updateBackendConfig(webAppUrl?: string, autoSync?: boolean): Promise<boolean> {
+  if (isStaticHost()) return false;
   try {
     const res = await fetch('/api/sync/config', {
       method: 'POST',
