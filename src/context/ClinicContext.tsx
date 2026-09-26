@@ -908,11 +908,20 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
           if (status.version > localBackendVersionRef.current) {
             localBackendVersionRef.current = status.version;
-            const backendData = await fetchDatabaseFromBackend();
-            if (backendData.success && backendData.data) {
-              importDatabase(backendData.data);
-              const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
-              setLastSyncMessage(`Sinkronisasi otomatis aktif (${time} WIB)`);
+            if (isLargeDataMode) {
+              const bootstrap = await fetchBootstrapFromBackend({ perTable: 100 });
+              if (bootstrap.success && bootstrap.data) {
+                importDatabase(bootstrap.data);
+                const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+                setLastSyncMessage(`Sinkronisasi data besar aktif (${time} WIB)`);
+              }
+            } else {
+              const backendData = await fetchDatabaseFromBackend();
+              if (backendData.success && backendData.data) {
+                importDatabase(backendData.data);
+                const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+                setLastSyncMessage(`Sinkronisasi otomatis aktif (${time} WIB)`);
+              }
             }
           }
           return;
@@ -1120,8 +1129,36 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Abaikan dan gunakan fallback direct jika backend tidak merespons
     }
 
-    // Fallback: jika backend belum siap, tarik langsung via browser
+    // Fallback: jika backend belum siap, tarik langsung via browser.
+    // Pada dataset besar gunakan fetchTable per halaman, bukan fetchAll.
     if (spreadsheetConfig.webAppUrl) {
+      if (isLargeDataMode) {
+        const tables: Array<keyof SpreadsheetDatabaseSchema> = [
+          'owners', 'pets', 'queues', 'soapRecords', 'cages',
+          'inventory', 'bookings', 'staff', 'feedbacks'
+        ];
+        const pages = await Promise.all(
+          tables.map((table) =>
+            import('../database/spreadsheetDb').then(({ pullTableFromSpreadsheet }) =>
+              pullTableFromSpreadsheet(spreadsheetConfig.webAppUrl, table, 0, 100)
+            )
+          )
+        );
+        const data: Partial<SpreadsheetDatabaseSchema> = {};
+        tables.forEach((table, index) => {
+          const result: any = pages[index];
+          if (result?.success) (data as any)[table] = result.data || [];
+        });
+        hasInitialSyncedRef.current = true;
+        importDatabase(data);
+        const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+        setSpreadsheetConfig((prev) => ({ ...prev, isConnected: true, lastSyncedAt: nowStr }));
+        setSyncStatus('connected');
+        const msg = `Mode data besar aktif — working set diperbarui pada ${nowStr} WIB`;
+        if (!silent) setLastSyncMessage(msg);
+        return { success: true, message: msg };
+      }
+
       const directRes = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
       if (directRes.success && directRes.data) {
         hasInitialSyncedRef.current = true;
