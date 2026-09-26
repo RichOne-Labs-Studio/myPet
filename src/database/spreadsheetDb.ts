@@ -689,22 +689,8 @@ const TABLE_HEADERS = {
 // STAGE 6 - GOOGLE SHEETS ACCESS OPTIMIZATION
 // ==========================================
 const CACHE_TTL_SECONDS = 120;
-const QUERY_CACHE_TTL_SECONDS = 60;
 const COUNTS_CACHE_KEY = 'mypet_counts_v1';
 const COUNTS_CACHE_TS_KEY = 'mypet_counts_ts_v1';
-const QUERY_CACHE_VERSION_KEY = 'mypet_query_cache_version_v1';
-const QUERY_CACHE_MAX_BYTES = 90000;
-
-function getQueryCacheVersion() {
-  const props = PropertiesService.getScriptProperties();
-  return props.getProperty(QUERY_CACHE_VERSION_KEY) || '1';
-}
-
-function invalidateQueryCache() {
-  const props = PropertiesService.getScriptProperties();
-  const current = Number(props.getProperty(QUERY_CACHE_VERSION_KEY) || '1');
-  props.setProperty(QUERY_CACHE_VERSION_KEY, String(current + 1));
-}
 
 function countTableRowsFast(ss, table) {
   const sheet = ss.getSheetByName(SHEET_NAMES[table]);
@@ -769,50 +755,6 @@ function invalidateCountsCache() {
   props.deleteProperty(COUNTS_CACHE_TS_KEY);
 }
 
-function makeQueryCacheKey(table, offset, limit, filters) {
-  const raw = [
-    getQueryCacheVersion(),
-    table,
-    String(offset || 0),
-    String(limit || ''),
-    String(filters && filters.search || '').trim().toLowerCase(),
-    String(filters && filters.species || '').trim().toLowerCase(),
-    String(filters && filters.status || '').trim().toLowerCase()
-  ].join('|');
-
-  const digest = Utilities.computeDigest(
-    Utilities.DigestAlgorithm.SHA_256,
-    raw,
-    Utilities.Charset.UTF_8
-  );
-
-  return 'q_' + digest.map(function(b) {
-    const n = b < 0 ? b + 256 : b;
-    return ('0' + n.toString(16)).slice(-2);
-  }).join('');
-}
-
-function queryTableDataCached(ss, table, offset, limit, filters) {
-  const cache = CacheService.getScriptCache();
-  const key = makeQueryCacheKey(table, offset, limit, filters);
-  const cached = cache.get(key);
-
-  if (cached) {
-    try { return JSON.parse(cached); } catch (e) {}
-  }
-
-  const result = queryTableDataUncached(ss, table, offset, limit, filters);
-  try {
-    const serialized = JSON.stringify(result);
-    // CacheService has a per-value size limit; stay below it.
-    if (serialized.length <= QUERY_CACHE_MAX_BYTES) {
-      cache.put(key, serialized, QUERY_CACHE_TTL_SECONDS);
-    }
-  } catch (e) {}
-
-  return result;
-}
-
 function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheetsExist(ss);
@@ -854,7 +796,7 @@ function doGet(e) {
       species: e.parameter.species || '',
       status: e.parameter.status || ''
     };
-    const result = queryTableDataCached(ss, table, offset, limit, filters);
+    const result = queryTableDataUncached(ss, table, offset, limit, filters);
 
     return createJsonResponse({
       status: 'success',
@@ -905,7 +847,6 @@ function doPost(e) {
       });
 
       // Data berubah: naikkan versi query cache dan refresh count cache sekali.
-      invalidateQueryCache();
       invalidateCountsCache();
       refreshCountsCache(ss);
 
@@ -918,7 +859,6 @@ function doPost(e) {
 
     if (action === 'upsert' && payload.table && payload.record) {
       upsertRecord(ss, payload.table, payload.record);
-      invalidateQueryCache();
       invalidateCountsCache();
       refreshCountsCache(ss);
       return createJsonResponse({
@@ -931,7 +871,6 @@ function doPost(e) {
     if (action === 'delete' && payload.table && payload.id) {
       const deleted = deleteRecord(ss, payload.table, payload.id);
       if (deleted) {
-        invalidateQueryCache();
         invalidateCountsCache();
         refreshCountsCache(ss);
       }
