@@ -348,7 +348,8 @@ export async function pullFullDatabaseFromSpreadsheet(webAppUrl: string): Promis
 export async function pullTablesBatchFromSpreadsheet(
   webAppUrl: string,
   tables: Array<keyof SpreadsheetDatabaseSchema>,
-  limit: number = 100
+  limit: number = 100,
+  tableLimits: Partial<Record<keyof SpreadsheetDatabaseSchema, number>> = {}
 ): Promise<{ success: boolean; message: string; data?: Partial<SpreadsheetDatabaseSchema>; totals?: Record<string, number> }> {
   if (!webAppUrl || !webAppUrl.trim()) {
     return { success: false, message: 'URL Google Apps Script belum dikonfigurasi.' };
@@ -356,9 +357,19 @@ export async function pullTablesBatchFromSpreadsheet(
 
   const cleanUrl = webAppUrl.trim();
   const tableList = tables.map(String).join(',');
+  const safeDefaultLimit = Math.min(100, Math.max(1, limit));
+  const normalizedTableLimits = Object.fromEntries(
+    Object.entries(tableLimits).map(([table, value]) => [
+      table,
+      Math.max(0, Math.min(10000, Number(value) || 0))
+    ])
+  );
+  const limitsParam = Object.keys(normalizedTableLimits).length > 0
+    ? `&limits=${encodeURIComponent(JSON.stringify(normalizedTableLimits))}`
+    : '';
   const fetchUrl = cleanUrl.includes('?')
-    ? `${cleanUrl}&action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${Math.min(100, Math.max(1, limit))}&_t=${Date.now()}`
-    : `${cleanUrl}?action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${Math.min(100, Math.max(1, limit))}&_t=${Date.now()}`;
+    ? `${cleanUrl}&action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${safeDefaultLimit}${limitsParam}&_t=${Date.now()}`
+    : `${cleanUrl}?action=fetchTables&tables=${encodeURIComponent(tableList)}&limit=${safeDefaultLimit}${limitsParam}&_t=${Date.now()}`;
 
   try {
     const controller = new AbortController();
@@ -857,7 +868,7 @@ function doGet(e) {
     return createJsonResponse({
       status: 'success',
       stage: '6.2',
-      deploymentMarker: 'STAGE-6.2-MONITORING',
+      deploymentMarker: 'STAGE-7.2-BATCH-READ-PER-TABLE-LIMIT',
       queryResultCache: false,
       countCache: true,
       textFinderUpsert: true,
@@ -915,6 +926,43 @@ function doGet(e) {
       message: 'Vier Pet Care Google Sheets Database Online & Terhubung',
       tables: Object.values(SHEET_NAMES),
       counts: counts,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (action === 'fetchTables' && e && e.parameter && e.parameter.tables) {
+    const requestedTables = String(e.parameter.tables || '')
+      .split(',')
+      .map(function(table) { return table.trim(); })
+      .filter(function(table) { return !!SHEET_NAMES[table]; });
+    const defaultLimit = Math.max(1, Math.min(10000, parseInt(e.parameter.limit || '100', 10) || 100));
+    let perTableLimits = {};
+    if (e.parameter.limits) {
+      try {
+        const parsedLimits = JSON.parse(e.parameter.limits);
+        if (parsedLimits && typeof parsedLimits === 'object') perTableLimits = parsedLimits;
+      } catch (err) {}
+    }
+
+    const batchData = {};
+    const totals = {};
+    requestedTables.forEach(function(table) {
+      const requestedLimit = Number(perTableLimits[table]);
+      const tableLimit = Number.isFinite(requestedLimit)
+        ? Math.max(0, Math.min(10000, Math.floor(requestedLimit)))
+        : defaultLimit;
+      const sheet = ss.getSheetByName(SHEET_NAMES[table]);
+      const total = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+      totals[table] = total;
+      batchData[table] = readTableData(ss, table, 0, tableLimit || undefined);
+    });
+
+    return createJsonResponse({
+      status: 'success',
+      stage: '7.2',
+      deploymentMarker: 'STAGE-7.2-BATCH-READ-PER-TABLE-LIMIT',
+      data: batchData,
+      totals: totals,
       timestamp: new Date().toISOString()
     });
   }
