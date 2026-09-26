@@ -57,6 +57,30 @@ app.get('/api/sync/data', (req, res) => {
   }
 });
 
+// 1b. Query tabel dengan server-side pagination/filtering.
+// Browser menerima hanya halaman yang diminta, bukan seluruh tabel.
+app.get('/api/sync/query', (req, res) => {
+  try {
+    const table = String(req.query.table || '') as any;
+    const allowed = ['owners','pets','queues','soapRecords','cages','inventory','bookings','staff','feedbacks'];
+    if (!allowed.includes(table)) {
+      return res.status(400).json({ success: false, message: 'Tabel tidak valid.' });
+    }
+
+    const result = syncManager.queryTable(table, {
+      page: Number(req.query.page) || 1,
+      limit: Number(req.query.limit) || 25,
+      search: String(req.query.search || ''),
+      species: String(req.query.species || ''),
+      status: String(req.query.status || ''),
+    });
+
+    res.json({ success: true, ...result, status: syncManager.getStatus() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // 2. Status sinkronisasi & versi database saat ini (Ringan ~100 bytes untuk polling)
 app.get('/api/sync/status', (req, res) => {
   try {
