@@ -32,6 +32,7 @@ import { Pet, PetType } from '../../types';
 import { formatDateTimeDisplay } from '../../utils/dateUtils';
 import { normalizePhoneWithZero, toWhatsappNumber } from '../../utils/phoneUtils';
 import { getPetEmoji, getPetTypeIndonesian, normalizePetType } from '../../utils/petUtils';
+import { queryTableFromSpreadsheet } from '../../database/spreadsheetDb';
 
 interface Props {
   navigate: (to: AppRoute) => void;
@@ -50,6 +51,7 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
     updatePet,
     syncStatus,
     syncFromSpreadsheet,
+    spreadsheetConfig,
   } = useClinic();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -248,7 +250,13 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
     return null;
   };
 
+  const useRemotePagination = pets.length > 20000;
+  const [remotePets, setRemotePets] = useState<Pet[]>([]);
+  const [remoteTotal, setRemoteTotal] = useState(0);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+
   const filteredPets = useMemo(() => {
+    if (useRemotePagination) return remotePets;
     const q = debouncedSearch.toLowerCase().trim();
     const cleanDigits = debouncedSearch.replace(/\D/g, '');
 
@@ -278,7 +286,7 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
 
       return matchesSearch && matchesSpecies && matchesStatus;
     });
-  }, [pets, debouncedSearch, selectedSpecies, selectedStatus, ownerMap, queueOwnerMap, soapOwnerMap]);
+  }, [pets, debouncedSearch, selectedSpecies, selectedStatus, ownerMap, queueOwnerMap, soapOwnerMap, useRemotePagination, remotePets]);
 
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
@@ -287,11 +295,36 @@ export const DataPasien: React.FC<Props> = ({ navigate, onSelectPetForSoap }) =>
     setCurrentPage(1);
   }, [searchQuery, selectedSpecies, selectedStatus]);
 
-  const totalPages = Math.ceil(filteredPets.length / pageSize) || 1;
+  useEffect(() => {
+    if (!useRemotePagination || !spreadsheetConfig?.webAppUrl) return;
+    let cancelled = false;
+    setRemoteLoading(true);
+    queryTableFromSpreadsheet(spreadsheetConfig.webAppUrl, 'pets', {
+      page: currentPage,
+      limit: pageSize,
+      search: debouncedSearch,
+      species: selectedSpecies === 'all' ? '' : selectedSpecies,
+      status: selectedStatus === 'all' ? '' : selectedStatus,
+    }).then((result) => {
+      if (cancelled) return;
+      if (result.success) {
+        setRemotePets((result.data || []) as Pet[]);
+        setRemoteTotal(Number(result.total || 0));
+      }
+    }).finally(() => {
+      if (!cancelled) setRemoteLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [useRemotePagination, spreadsheetConfig?.webAppUrl, currentPage, debouncedSearch, selectedSpecies, selectedStatus]);
+
+  const totalPages = useRemotePagination
+    ? Math.ceil(remoteTotal / pageSize) || 1
+    : Math.ceil(filteredPets.length / pageSize) || 1;
   const paginatedPets = useMemo(() => {
+    if (useRemotePagination) return filteredPets;
     const start = (currentPage - 1) * pageSize;
     return filteredPets.slice(start, start + pageSize);
-  }, [filteredPets, currentPage]);
+  }, [filteredPets, currentPage, useRemotePagination]);
 
   const toggleExpand = (id: string) => {
     setExpandedPetId((prev) => (prev === id ? null : id));
