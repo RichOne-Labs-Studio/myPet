@@ -356,7 +356,15 @@ export async function pullTableFromSpreadsheet(
       } else if (table === 'soapRecords') {
         records = records.map((s: any) => ({ ...s, diagnosticAttachments: decryptDiagnosticAttachments(s.diagnosticAttachments) }));
       }
-      return { success: true, message: `Tabel ${table} berhasil ditarik`, data: records };
+      return {
+        success: true,
+        message: `Tabel ${table} berhasil ditarik`,
+        data: records,
+        total: Number(json.total ?? json.count ?? records.length),
+        page: Number(json.page ?? Math.floor(offset / (limit || records.length || 1)) + 1),
+        limit: Number(json.limit ?? limit ?? records.length),
+        totalPages: Number(json.totalPages ?? 0) || Math.max(1, Math.ceil(Number(json.total ?? json.count ?? records.length) / Number(json.limit ?? limit ?? records.length || 1))),
+      };
     }
 
     return { success: false, message: json.message || 'Format tidak sesuai' };
