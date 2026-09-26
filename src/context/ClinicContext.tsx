@@ -824,21 +824,20 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         );
 
         if (batch.success && batch.data) {
-          const batchTotal = totalFromCounts(batch.totals);
-          const effectiveTotal = Math.max(total, batchTotal);
-
-          if (effectiveTotal >= BATCH_STARTUP_THRESHOLD) {
-            setIsLargeDataMode(true);
-            hasInitialSyncedRef.current = true;
-            importDatabase(batch.data);
-            setSyncStatus('connected');
-            return true;
-          }
-
-          // Dataset is genuinely below the large-data threshold.
-          // Preserve the existing full-read behavior for smaller installations.
+          // Stage 7.2: a successful batch response is the startup working set.
+          // Do not fall back to fetchAll based on counts from only the critical
+          // tables; large tables such as soapRecords are intentionally hydrated
+          // progressively in later stages.
+          setIsLargeDataMode(true);
+          hasInitialSyncedRef.current = true;
+          importDatabase(batch.data);
+          setSyncStatus('connected');
+          return true;
         }
 
+        // Only fall back to the legacy full read when the batch endpoint itself
+        // fails. This preserves compatibility without reintroducing fetchAll on
+        // a successful Stage 7.2 deployment.
         const full = await pullFullDatabaseFromSpreadsheet(spreadsheetConfig.webAppUrl);
         if (full.success && full.data) {
           hasInitialSyncedRef.current = true;
