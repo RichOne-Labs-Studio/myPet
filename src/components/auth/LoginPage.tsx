@@ -39,13 +39,13 @@ export const LoginPage: React.FC<Props> = ({ navigate, redirectTarget }) => {
   };
 
   return (
-    <div className="min-h-screen bg-neutral-50 flex flex-col justify-center items-center px-4 py-12 relative overflow-hidden font-sans">
+    <div className="min-h-screen bg-neutral-50 flex flex-col justify-center items-center px-4 py-8 relative overflow-hidden font-sans">
       {/* Background glow effects */}
       <div className="absolute top-0 right-1/4 w-96 h-96 bg-fuchsia-200/30 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-0 left-1/4 w-96 h-96 bg-fuchsia-100/40 rounded-full blur-3xl pointer-events-none" />
 
       {/* Back to public link */}
-      <div className="w-full max-w-md mb-6 flex justify-start items-center z-10">
+      <div className="w-full max-w-lg mb-4 flex justify-start items-center z-10">
         <button
           onClick={() => navigate('/')}
           className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-600 hover:text-neutral-900 transition cursor-pointer"
@@ -56,19 +56,19 @@ export const LoginPage: React.FC<Props> = ({ navigate, redirectTarget }) => {
       </div>
 
       {/* Login Card */}
-      <div className="w-full max-w-md bg-white rounded-3xl border border-neutral-200/80 p-8 shadow-xl z-10">
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center mx-auto mb-4">
-            <VierLogo className="h-16 w-auto" />
+      <div className="w-full max-w-lg bg-white rounded-3xl border border-neutral-200/80 p-6 sm:p-8 shadow-xl z-10 space-y-6">
+        <div className="text-center">
+          <div className="flex items-center justify-center mx-auto mb-3">
+            <VierLogo className="h-14 w-auto" />
           </div>
           <h2 className="text-2xl font-black text-neutral-900 tracking-tight">myPet</h2>
           <p className="text-xs text-neutral-500 mt-1">
-            Sistem Manajemen Klinik Hewan Terpadu
+            Sistem Informasi Manajemen Klinik Hewan Terpadu
           </p>
         </div>
 
         {error && (
-          <div className="mb-5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium text-center">
+          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium text-center">
             {error}
           </div>
         )}
@@ -77,7 +77,7 @@ export const LoginPage: React.FC<Props> = ({ navigate, redirectTarget }) => {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-neutral-700 mb-1.5">
-              Username Staff / Dokter
+              Username
             </label>
             <div className="relative">
               <input
@@ -104,7 +104,7 @@ export const LoginPage: React.FC<Props> = ({ navigate, redirectTarget }) => {
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Masukkan kata sandi"
+                placeholder="Masukkan kata sandi akun"
                 className="w-full pl-3.5 pr-11 py-2.5 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-900 placeholder-neutral-400 text-sm focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500 focus:border-fuchsia-500 font-mono"
               />
               <button
@@ -125,13 +125,13 @@ export const LoginPage: React.FC<Props> = ({ navigate, redirectTarget }) => {
             id="btn-submit-login"
             className="w-full py-3 px-4 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-bold text-sm shadow-md shadow-fuchsia-900/20 transition duration-150 transform active:scale-98 mt-2 cursor-pointer"
           >
-            Masuk
+            Masuk ke Portal
           </button>
         </form>
 
-        <div className="mt-6 pt-5 border-t border-neutral-100 text-center">
+        <div className="pt-2 text-center">
           <p className="text-[11px] text-neutral-400">
-            Akses terbatas hanya untuk staf administrasi dan dokter hewan terdaftar Vier Pet Care.
+            Akses sistem dilindungi hak cipta Vier Pet Care Clinic.
           </p>
         </div>
       </div>

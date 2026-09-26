@@ -33,6 +33,7 @@ import {
   Calendar,
   Filter,
   Hotel,
+  Lock,
 } from 'lucide-react';
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
@@ -41,6 +42,7 @@ import { formatDateTimeDisplay } from '../../utils/dateUtils';
 import { toWhatsappNumber } from '../../utils/phoneUtils';
 import { getPetEmoji, getPetTypeIndonesian } from '../../utils/petUtils';
 import { compressImageFile } from '../../utils/imageUtils';
+import { canViewRevenue } from '../../utils/authUtils';
 
 interface Props {
   navigate: (to: AppRoute) => void;
@@ -954,7 +956,14 @@ export const RekamMedis: React.FC<Props> = ({
 
                             {/* Biaya (Service Fee) */}
                             <td className="px-4 py-3 text-right font-mono font-bold text-neutral-900 whitespace-nowrap">
-                              {record.serviceFee !== undefined ? `Rp ${(record.serviceFee).toLocaleString('id-ID')}` : 'Rp 0'}
+                              {canViewRevenue(currentUser) ? (
+                                record.serviceFee !== undefined ? `Rp ${(record.serviceFee).toLocaleString('id-ID')}` : 'Rp 0'
+                              ) : (
+                                <span className="text-[11px] text-neutral-400 font-mono inline-flex items-center gap-1">
+                                  <Lock className="w-3 h-3 text-neutral-300" />
+                                  <span>••••••</span>
+                                </span>
+                              )}
                             </td>
 
                             {/* Action Column */}
@@ -1068,9 +1077,16 @@ export const RekamMedis: React.FC<Props> = ({
                                       </div>
                                       <div className="bg-fuchsia-50 p-2.5 rounded-lg border border-fuchsia-100 col-span-2 sm:col-span-1">
                                         <span className="text-[10px] text-fuchsia-600 font-bold block">Biaya Layanan:</span>
-                                        <span className="text-fuchsia-900 font-black text-sm">
-                                          {record.serviceFee !== undefined ? `Rp ${(record.serviceFee).toLocaleString('id-ID')}` : 'Rp 0'}
-                                        </span>
+                                        {canViewRevenue(currentUser) ? (
+                                          <span className="text-fuchsia-900 font-black text-sm">
+                                            {record.serviceFee !== undefined ? `Rp ${(record.serviceFee).toLocaleString('id-ID')}` : 'Rp 0'}
+                                          </span>
+                                        ) : (
+                                          <span className="text-neutral-500 font-medium text-xs flex items-center gap-1 mt-0.5">
+                                            <Lock className="w-3 h-3 text-neutral-400" />
+                                            <span>Khusus Super Admin</span>
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                   </div>

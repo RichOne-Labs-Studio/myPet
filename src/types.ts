@@ -2,7 +2,7 @@ export type PetType = 'Cat' | 'Dog' | 'Rabbit' | 'Exotic' | 'Farm Animal';
 export type ServiceType = 'Consultation' | 'Vaccine' | 'Grooming' | 'Hotel' | 'Daftar';
 export type QueueStatus = 'Menunggu' | 'Di Ruang Poli' | 'Selesai' | 'Dibatalkan';
 export type CageStatus = 'Occupied' | 'Cleaning' | 'Available';
-export type StaffRole = 'Dokter Hewan' | 'Staff Admin / Frontdesk';
+export type StaffRole = 'Super Admin / Owner' | 'Dokter Hewan' | 'Staff Admin / Frontdesk';
 
 export interface Owner {
   id: string;

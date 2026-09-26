@@ -20,10 +20,16 @@ import {
   Meh,
   Frown,
   Sparkles,
+  Lock,
+  Crown,
+  Edit3,
+  Check,
+  RotateCcw,
 } from 'lucide-react';
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
 import { CustomerFeedback } from '../../types';
+import { canViewRevenue } from '../../utils/authUtils';
 import { VisitTrendAnalytics } from '../analytics/VisitTrendAnalytics';
 
 interface Props {
@@ -39,12 +45,70 @@ export const AdminLaporan: React.FC<Props> = ({ navigate }) => {
     bookings,
     owners,
     pets,
+    currentUser,
   } = useClinic();
 
   // Current month/year filter for monthly report
   const now = new Date();
   const currentMonthValue = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthValue);
+
+  // Signature Block State with LocalStorage Persistence
+  const [signatures, setSignatures] = useState<{
+    leftTitle: string;
+    leftName: string;
+    leftRole: string;
+    rightTitle: string;
+    rightName: string;
+    rightRole: string;
+  }>(() => {
+    const saved = localStorage.getItem('vetcare_report_signatures');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        // fallback
+      }
+    }
+    return {
+      leftTitle: 'Penanggung Jawab Administrasi,',
+      leftName: 'Staff Frontdesk & Admin',
+      leftRole: 'Vier Pet Care',
+      rightTitle: 'Mengetahui & Menyetujui,',
+      rightName: 'drh. Sarah Wijaya',
+      rightRole: 'Kepala Dokter Hewan Klinik',
+    };
+  });
+
+  const [isEditingSignature, setIsEditingSignature] = useState(false);
+  const [tempSignatures, setTempSignatures] = useState(signatures);
+
+  const handleStartEditSignature = () => {
+    setTempSignatures(signatures);
+    setIsEditingSignature(true);
+  };
+
+  const handleSaveSignatures = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSignatures(tempSignatures);
+    localStorage.setItem('vetcare_report_signatures', JSON.stringify(tempSignatures));
+    setIsEditingSignature(false);
+  };
+
+  const handleResetSignatures = () => {
+    const defaultSignatures = {
+      leftTitle: 'Penanggung Jawab Administrasi,',
+      leftName: 'Staff Frontdesk & Admin',
+      leftRole: 'Vier Pet Care',
+      rightTitle: 'Mengetahui & Menyetujui,',
+      rightName: 'drh. Sarah Wijaya',
+      rightRole: 'Kepala Dokter Hewan Klinik',
+    };
+    setTempSignatures(defaultSignatures);
+    setSignatures(defaultSignatures);
+    localStorage.setItem('vetcare_report_signatures', JSON.stringify(defaultSignatures));
+    setIsEditingSignature(false);
+  };
 
   // Tabs: 'tren-kunjungan' | 'saran-masukan' | 'laporan-bulanan'
   const [activeTab, setActiveTab] = useState<'tren-kunjungan' | 'saran-masukan' | 'laporan-bulanan'>('tren-kunjungan');
@@ -858,37 +922,238 @@ export const AdminLaporan: React.FC<Props> = ({ navigate }) => {
 
             {/* Financial Overview if SOAP Records have fees */}
             <div className="mb-8">
-              <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-3">
-                IV. Estimasi Transaksi Medis & Layanan
-              </h3>
-              <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-bold text-emerald-950">Total Nilai Tindakan & Layanan (SOAP)</p>
-                  <p className="text-[11px] text-emerald-700">
-                    Berdasarkan {monthlySoapRecords.length} tindakan rekam medis yang dicatat oleh dokter
-                  </p>
-                </div>
-                <div className="text-right">
-                  <span className="text-xl font-black text-emerald-800 font-mono">
-                    Rp {monthlyRevenue.toLocaleString('id-ID')}
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider">
+                  IV. Estimasi Transaksi Medis & Layanan
+                </h3>
+                {canViewRevenue(currentUser) ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                    <Crown className="w-3 h-3 text-amber-600" />
+                    Super Admin
                   </span>
-                </div>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-600 border border-neutral-200">
+                    <Lock className="w-3 h-3 text-neutral-500" />
+                    Akses Terbatas
+                  </span>
+                )}
               </div>
+
+              {canViewRevenue(currentUser) ? (
+                <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-bold text-emerald-950">Total Nilai Tindakan & Layanan (SOAP)</p>
+                    <p className="text-[11px] text-emerald-700">
+                      Berdasarkan {monthlySoapRecords.length} tindakan rekam medis yang dicatat oleh dokter
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xl font-black text-emerald-800 font-mono">
+                      Rp {monthlyRevenue.toLocaleString('id-ID')}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl border border-neutral-200 bg-neutral-50 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-bold text-neutral-700">Rekapitulasi Nilai Finansial Disembunyikan</p>
+                    <p className="text-[11px] text-neutral-500">
+                      Tercatat {monthlySoapRecords.length} tindakan rekam medis. Hanya akun Super Admin / Owner yang dapat mengakses total nominal rupiah.
+                    </p>
+                  </div>
+                  <div className="text-right flex items-center gap-1.5 text-neutral-400">
+                    <Lock className="w-4 h-4" />
+                    <span className="text-xs font-bold font-mono">Rp ••••••••</span>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Signature Block (Tanda Tangan Pengesahan) */}
-            <div className="pt-6 border-t border-neutral-200 grid grid-cols-2 text-center text-xs">
-              <div>
-                <p className="text-neutral-500">Penanggung Jawab Administrasi,</p>
-                <div className="h-16"></div>
-                <p className="font-bold text-neutral-900 underline">Staff Frontdesk & Admin</p>
-                <p className="text-[10px] text-neutral-400 font-mono">Vier Pet Care</p>
+            {/* Signature Block (Tanda Tangan Pengesahan - Dapat Diedit) */}
+            <div className="pt-6 border-t border-neutral-200">
+              {/* Edit Toggle / Form Toolbar (Hidden when printing) */}
+              <div className="mb-4 flex items-center justify-between print:hidden">
+                <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
+                  V. Pengesahan & Tanda Tangan
+                </span>
+                {!isEditingSignature ? (
+                  <button
+                    type="button"
+                    onClick={handleStartEditSignature}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-neutral-700 hover:text-fuchsia-800 bg-neutral-100 hover:bg-fuchsia-50 border border-neutral-200 hover:border-fuchsia-300 rounded-xl transition cursor-pointer shadow-2xs"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-fuchsia-700" />
+                    <span>Edit Nama & Jabatan Tanda Tangan</span>
+                  </button>
+                ) : (
+                  <span className="text-[11px] font-semibold text-fuchsia-700 bg-fuchsia-50 px-2.5 py-1 rounded-lg border border-fuchsia-200">
+                    Mode Pengeditan Tanda Tangan Aktif
+                  </span>
+                )}
               </div>
-              <div>
-                <p className="text-neutral-500">Mengetahui & Menyetujui,</p>
-                <div className="h-16"></div>
-                <p className="font-bold text-neutral-900 underline">drh. Sarah Wijaya</p>
-                <p className="text-[10px] text-neutral-400 font-mono">Kepala Dokter Hewan Klinik</p>
+
+              {/* Form Editor Modal / Inline Box (Hidden when printing) */}
+              {isEditingSignature && (
+                <form
+                  onSubmit={handleSaveSignatures}
+                  className="mb-6 p-4 rounded-2xl bg-fuchsia-50/60 border border-fuchsia-200 space-y-4 print:hidden animate-in fade-in duration-150"
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-fuchsia-200/70">
+                    <p className="text-xs font-bold text-fuchsia-950 flex items-center gap-1.5">
+                      <Edit3 className="w-4 h-4 text-fuchsia-700" />
+                      Ubah Data Penandatangan Laporan
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleResetSignatures}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Reset Standar
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                    {/* Kolom Kiri (Administrasi) */}
+                    <div className="p-3 bg-white rounded-xl border border-neutral-200 space-y-2.5">
+                      <p className="font-bold text-neutral-800 text-[11px] uppercase tracking-wider text-left">
+                        Penandatangan Kiri (Administrasi)
+                      </p>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-500 mb-1">
+                          Judul Pengesahan
+                        </label>
+                        <input
+                          type="text"
+                          value={tempSignatures.leftTitle}
+                          onChange={(e) =>
+                            setTempSignatures((prev) => ({ ...prev, leftTitle: e.target.value }))
+                          }
+                          placeholder="Penanggung Jawab Administrasi,"
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 text-xs focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-500 mb-1">
+                          Nama Lengkap Penandatangan
+                        </label>
+                        <input
+                          type="text"
+                          value={tempSignatures.leftName}
+                          onChange={(e) =>
+                            setTempSignatures((prev) => ({ ...prev, leftName: e.target.value }))
+                          }
+                          placeholder="Staff Frontdesk & Admin"
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-500 mb-1">
+                          Keterangan / Nama Instansi
+                        </label>
+                        <input
+                          type="text"
+                          value={tempSignatures.leftRole}
+                          onChange={(e) =>
+                            setTempSignatures((prev) => ({ ...prev, leftRole: e.target.value }))
+                          }
+                          placeholder="Vier Pet Care"
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 text-xs font-mono focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Kolom Kanan (Pimpinan / Dokter) */}
+                    <div className="p-3 bg-white rounded-xl border border-neutral-200 space-y-2.5">
+                      <p className="font-bold text-neutral-800 text-[11px] uppercase tracking-wider text-left">
+                        Penandatangan Kanan (Mengetahui / Pimpinan)
+                      </p>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-500 mb-1">
+                          Judul Pengesahan
+                        </label>
+                        <input
+                          type="text"
+                          value={tempSignatures.rightTitle}
+                          onChange={(e) =>
+                            setTempSignatures((prev) => ({ ...prev, rightTitle: e.target.value }))
+                          }
+                          placeholder="Mengetahui & Menyetujui,"
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 text-xs focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-500 mb-1">
+                          Nama Lengkap Penandatangan
+                        </label>
+                        <input
+                          type="text"
+                          value={tempSignatures.rightName}
+                          onChange={(e) =>
+                            setTempSignatures((prev) => ({ ...prev, rightName: e.target.value }))
+                          }
+                          placeholder="drh. Sarah Wijaya"
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-500 mb-1">
+                          Jabatan / Keterangan
+                        </label>
+                        <input
+                          type="text"
+                          value={tempSignatures.rightRole}
+                          onChange={(e) =>
+                            setTempSignatures((prev) => ({ ...prev, rightRole: e.target.value }))
+                          }
+                          placeholder="Kepala Dokter Hewan Klinik"
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 text-xs font-mono focus:outline-hidden focus:ring-2 focus:ring-fuchsia-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingSignature(false)}
+                      className="px-3.5 py-1.5 rounded-xl text-neutral-600 hover:bg-neutral-200/60 text-xs font-bold transition cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Simpan Tanda Tangan</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Signature Display (Rendered for both Web view & Print) */}
+              <div className="grid grid-cols-2 text-center text-xs pt-2">
+                <div>
+                  <p className="text-neutral-500">{signatures.leftTitle || 'Penanggung Jawab Administrasi,'}</p>
+                  <div className="h-16"></div>
+                  <p className="font-bold text-neutral-900 underline">
+                    {signatures.leftName || 'Staff Frontdesk & Admin'}
+                  </p>
+                  <p className="text-[10px] text-neutral-400 font-mono">
+                    {signatures.leftRole || 'Vier Pet Care'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-neutral-500">{signatures.rightTitle || 'Mengetahui & Menyetujui,'}</p>
+                  <div className="h-16"></div>
+                  <p className="font-bold text-neutral-900 underline">
+                    {signatures.rightName || 'drh. Sarah Wijaya'}
+                  </p>
+                  <p className="text-[10px] text-neutral-400 font-mono">
+                    {signatures.rightRole || 'Kepala Dokter Hewan Klinik'}
+                  </p>
+                </div>
               </div>
             </div>
           </div>

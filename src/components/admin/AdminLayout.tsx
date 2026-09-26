@@ -21,6 +21,7 @@ import {
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
 import { isToday } from '../../utils/dateUtils';
+import { getRoleBadgeInfo, canViewRevenue } from '../../utils/authUtils';
 
 interface Props {
   currentRoute: AppRoute;
@@ -58,6 +59,7 @@ export const AdminLayout: React.FC<Props> = ({ currentRoute, navigate, children 
   const criticalStockCount = inventory.filter((i) => i.stockQuantity <= i.minThreshold).length;
   const occupiedCagesCount = cages.filter((c) => c.status === 'Occupied').length;
   const feedbackCount = feedbacks.length;
+  const isSuperAdmin = canViewRevenue(currentUser);
 
   const navItems: NavItem[] = [
     {
@@ -112,12 +114,16 @@ export const AdminLayout: React.FC<Props> = ({ currentRoute, navigate, children 
       icon: ClipboardList,
       badge: feedbackCount > 0 ? `${feedbackCount}` : undefined,
     },
-    {
-      id: 'pengaturan',
-      route: '/admin/pengaturan',
-      label: 'Pengaturan Admin',
-      icon: Settings,
-    },
+    ...(isSuperAdmin
+      ? [
+          {
+            id: 'pengaturan',
+            route: '/admin/pengaturan' as AppRoute,
+            label: 'Pengaturan Admin',
+            icon: Settings,
+          },
+        ]
+      : []),
   ];
 
   const handleLogout = () => {
@@ -158,18 +164,24 @@ export const AdminLayout: React.FC<Props> = ({ currentRoute, navigate, children 
           </div>
 
           {/* Current Staff Profile Chip */}
-          <div className="p-3 mx-3 mt-3 rounded-xl bg-fuchsia-50/70 border border-fuchsia-100 flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200 flex items-center justify-center text-sm font-bold">
-              {currentUser?.avatar || '👨‍⚕️'}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-bold text-neutral-900 truncate">{currentUser?.name || 'drh. Sarah Wijaya'}</p>
-              <div className="flex items-center gap-1 text-[10px] text-fuchsia-700 font-medium">
-                <span className="w-1.5 h-1.5 rounded-full bg-fuchsia-600 animate-pulse"></span>
-                <span>{currentUser?.role || 'Dokter Hewan'}</span>
+          {(() => {
+            const roleInfo = getRoleBadgeInfo(currentUser?.role);
+            return (
+              <div className="p-3 mx-3 mt-3 rounded-xl bg-neutral-50/90 border border-neutral-200/80 flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-white text-neutral-800 border border-neutral-200 flex items-center justify-center text-sm font-bold shrink-0 shadow-2xs">
+                  {currentUser?.avatar || roleInfo.icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-neutral-900 truncate">{currentUser?.name || 'Administrator'}</p>
+                  <div className="flex items-center gap-1 text-[10px] mt-0.5">
+                    <span className={`px-1.5 py-0.2 rounded font-semibold border ${roleInfo.badgeClass}`}>
+                      {roleInfo.label}
+                    </span>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            );
+          })()}
 
           {/* Main Navigation Menu */}
           <nav className="p-3 space-y-1 mt-2">

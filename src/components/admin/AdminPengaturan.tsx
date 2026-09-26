@@ -14,10 +14,13 @@ import {
   Eye,
   EyeOff,
   Lock,
+  Crown,
+  Edit3,
 } from 'lucide-react';
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
 import { StaffRole, StaffUser } from '../../types';
+import { getRoleBadgeInfo, isSuperAdminRole, canViewRevenue } from '../../utils/authUtils';
 
 interface Props {
   navigate: (to: AppRoute) => void;
@@ -29,6 +32,7 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
     currentUser,
     addStaff,
     deleteStaff,
+    updateStaff,
     updateStaffPassword,
     syncToSpreadsheet,
   } = useClinic();
@@ -41,6 +45,15 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
   const [role, setRole] = useState<StaffRole>('Staff Admin / Frontdesk');
   const [avatar, setAvatar] = useState('👨‍💼');
   const [formError, setFormError] = useState('');
+
+  // Modal / Form state for editing staff (name, role, username, password, avatar)
+  const [editModalStaff, setEditModalStaff] = useState<StaffUser | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editUsername, setEditUsername] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [editRole, setEditRole] = useState<StaffRole>('Staff Admin / Frontdesk');
+  const [editAvatar, setEditAvatar] = useState('👨‍💼');
+  const [editFormError, setEditFormError] = useState('');
 
   // Modal for changing staff password
   const [passwordModalStaff, setPasswordModalStaff] = useState<StaffUser | null>(null);
@@ -129,7 +142,61 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
     }
   };
 
+  const handleOpenEditModal = (staf: StaffUser) => {
+    setEditModalStaff(staf);
+    setEditName(staf.name);
+    setEditUsername(staf.username);
+    setEditPassword(staf.password || 'admin');
+    setEditRole(staf.role);
+    setEditAvatar(staf.avatar || '👨‍💼');
+    setEditFormError('');
+  };
+
+  const handleSaveEditStaff = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editModalStaff) return;
+    setEditFormError('');
+
+    if (!editName.trim()) {
+      setEditFormError('Nama lengkap wajib diisi.');
+      return;
+    }
+    const cleanUsername = editUsername.trim().toLowerCase();
+    if (!cleanUsername) {
+      setEditFormError('Username wajib diisi.');
+      return;
+    }
+    if (cleanUsername.length < 3) {
+      setEditFormError('Username minimal 3 karakter.');
+      return;
+    }
+    if (!editPassword.trim()) {
+      setEditFormError('Kata sandi wajib diisi.');
+      return;
+    }
+    if (editPassword.trim().length < 3) {
+      setEditFormError('Kata sandi minimal 3 karakter.');
+      return;
+    }
+
+    const res = updateStaff(editModalStaff.id, {
+      name: editName.trim(),
+      username: cleanUsername,
+      role: editRole,
+      password: editPassword.trim(),
+      avatar: editAvatar,
+    });
+
+    if (res.success) {
+      showToast(res.message, 'success');
+      setEditModalStaff(null);
+    } else {
+      setEditFormError(res.message);
+    }
+  };
+
   const avatarOptions = [
+    { emoji: '👑', label: 'Owner / Direktur' },
     { emoji: '👨‍💼', label: 'Admin Pria' },
     { emoji: '👩‍💼', label: 'Admin Wanita' },
     { emoji: '👨‍⚕️', label: 'Dokter Pria' },
@@ -137,6 +204,31 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
     { emoji: '🧑‍⚕️', label: 'Perawat Hewan' },
     { emoji: '👤', label: 'Staf Umum' },
   ];
+
+  // Restrict access: Only Super Admin / Owner can view & manage Pengaturan
+  if (!canViewRevenue(currentUser)) {
+    return (
+      <div className="bg-white rounded-3xl border border-neutral-200/80 p-8 text-center max-w-lg mx-auto my-12 space-y-4 shadow-sm">
+        <div className="w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto text-2xl">
+          🔒
+        </div>
+        <div>
+          <h2 className="text-xl font-black text-neutral-900 tracking-tight">Akses Terbatas: Khusus Super Admin / Owner</h2>
+          <p className="text-xs text-neutral-500 leading-relaxed mt-2">
+            Halaman Pengaturan & Manajemen Admin hanya dapat diakses oleh akun dengan tingkatan hak akses <strong>Super Admin / Owner</strong>.
+          </p>
+        </div>
+        <div className="pt-3">
+          <button
+            onClick={() => navigate('/admin/dashboard')}
+            className="px-5 py-2.5 bg-fuchsia-700 hover:bg-fuchsia-800 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+          >
+            Kembali ke Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-12">
@@ -245,6 +337,45 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
         </div>
       </div>
 
+      {/* Info: Matrix Hak Akses Login Berjenjang */}
+      <div className="bg-white rounded-2xl border border-neutral-200/80 p-5 shadow-xs">
+        <div className="flex items-center gap-2 mb-3">
+          <Shield className="w-4 h-4 text-fuchsia-700" />
+          <h3 className="text-sm font-bold text-neutral-900">Struktur Hak Akses Login Berjenjang</h3>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="p-3.5 rounded-xl border border-amber-200 bg-amber-50/50 space-y-1">
+            <div className="flex items-center gap-1.5 font-bold text-amber-950 text-xs">
+              <span>👑</span>
+              <span>Super Admin / Owner</span>
+            </div>
+            <p className="text-[11px] text-amber-900 leading-relaxed">
+              <strong>Hak Akses Penuh:</strong> Melihat semua data, grafik tren, manajemen akun staf, serta <strong>rekapitulasi estimasi pendapatan & nominal tarif finansial</strong> di Dashboard dan Laporan.
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl border border-sky-200 bg-sky-50/50 space-y-1">
+            <div className="flex items-center gap-1.5 font-bold text-sky-950 text-xs">
+              <span>🛡️</span>
+              <span>Staff Admin / Frontdesk</span>
+            </div>
+            <p className="text-[11px] text-sky-900 leading-relaxed">
+              <strong>Operasional Frontdesk:</strong> Registrasi pasien, antrean poli, data pemilik, rawat inap, stok obat, & kepuasan klien. <em>Rekapitulasi estimasi nominal omset disembunyikan.</em>
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl border border-fuchsia-200 bg-fuchsia-50/50 space-y-1">
+            <div className="flex items-center gap-1.5 font-bold text-fuchsia-950 text-xs">
+              <span>🩺</span>
+              <span>Dokter Hewan</span>
+            </div>
+            <p className="text-[11px] text-fuchsia-900 leading-relaxed">
+              <strong>Pelayanan Medis:</strong> Pemeriksaan klinis SOAP, unggah berkas rontgen/lab, e-resep, dan observasi rawat inap. <em>Rekapitulasi total omset klinik disembunyikan.</em>
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Staff User Management Table */}
       <div className="bg-white rounded-2xl border border-neutral-200/80 shadow-xs overflow-hidden">
         <div className="p-5 border-b border-neutral-100 flex items-center justify-between flex-wrap gap-2">
@@ -300,20 +431,17 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
                     </td>
 
                     <td className="p-4">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                          staf.role === 'Dokter Hewan'
-                            ? 'bg-fuchsia-50 text-fuchsia-800 border border-fuchsia-200'
-                            : 'bg-neutral-100 text-neutral-800 border border-neutral-200'
-                        }`}
-                      >
-                        {staf.role === 'Dokter Hewan' ? (
-                          <Stethoscope className="w-3 h-3 text-fuchsia-600" />
-                        ) : (
-                          <Shield className="w-3 h-3 text-neutral-500" />
-                        )}
-                        <span>{staf.role}</span>
-                      </span>
+                      {(() => {
+                        const badgeInfo = getRoleBadgeInfo(staf.role);
+                        return (
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${badgeInfo.badgeClass}`}
+                          >
+                            <span>{badgeInfo.icon}</span>
+                            <span>{badgeInfo.label}</span>
+                          </span>
+                        );
+                      })()}
                     </td>
 
                     <td className="p-4">
@@ -352,20 +480,17 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
                     </td>
 
                     <td className="p-4 text-right">
-                      <div className="flex items-center justify-end gap-1">
+                      <div className="flex items-center justify-end gap-1.5">
                         <button
-                          onClick={() => {
-                            setPasswordModalStaff(staf);
-                            setNewPasswordInput('');
-                            setPasswordModalError('');
-                          }}
-                          title="Ubah kata sandi akun ini"
-                          className="p-1.5 text-neutral-500 hover:text-fuchsia-700 hover:bg-fuchsia-50 rounded-lg transition cursor-pointer"
+                          onClick={() => handleOpenEditModal(staf)}
+                          title="Edit akun, peran/hak akses, dan sandi"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-neutral-700 hover:text-fuchsia-800 bg-neutral-100 hover:bg-fuchsia-50 border border-neutral-200 hover:border-fuchsia-300 rounded-lg transition cursor-pointer shadow-2xs"
                         >
-                          <KeyRound className="w-4 h-4" />
+                          <Edit3 className="w-3.5 h-3.5 text-fuchsia-700" />
+                          <span>Edit</span>
                         </button>
                         {isCurrent ? (
-                          <span className="text-[11px] text-neutral-400 italic ml-1">Akun Anda</span>
+                          <span className="text-[10px] text-neutral-400 italic px-1.5 py-1 bg-neutral-50 rounded-md border border-neutral-200">Akun Anda</span>
                         ) : (
                           <button
                             onClick={() => handleDeleteStaff(staf.id, staf.name)}
@@ -472,7 +597,9 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
                   onChange={(e) => {
                     const selectedRole = e.target.value as StaffRole;
                     setRole(selectedRole);
-                    if (selectedRole === 'Dokter Hewan') {
+                    if (selectedRole === 'Super Admin / Owner') {
+                      setAvatar('👑');
+                    } else if (selectedRole === 'Dokter Hewan') {
                       setAvatar('👩‍⚕️');
                     } else {
                       setAvatar('👨‍💼');
@@ -480,8 +607,9 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
                   }}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-fuchsia-700/20 cursor-pointer"
                 >
-                  <option value="Staff Admin / Frontdesk">Staff Admin / Frontdesk</option>
-                  <option value="Dokter Hewan">Dokter Hewan</option>
+                  <option value="Super Admin / Owner">👑 Super Admin / Owner (Akses Penuh & Rekap Omset)</option>
+                  <option value="Staff Admin / Frontdesk">🛡️ Staff Admin / Frontdesk (Operasional Klinik)</option>
+                  <option value="Dokter Hewan">🩺 Dokter Hewan (Pemeriksaan & SOAP)</option>
                 </select>
               </div>
 
@@ -609,6 +737,157 @@ export const AdminPengaturan: React.FC<Props> = ({ navigate }) => {
                   className="px-5 py-2.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
                 >
                   Simpan Kata Sandi
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Edit Akun, Peran / Hak Akses & Kata Sandi */}
+      {editModalStaff && (
+        <div className="fixed inset-0 z-50 bg-neutral-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full border border-neutral-200 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+              <div className="flex items-center gap-2">
+                <span className="p-2 rounded-xl bg-fuchsia-100 text-fuchsia-700">
+                  <Edit3 className="w-4 h-4" />
+                </span>
+                <div>
+                  <h3 className="text-base font-bold text-neutral-900">Edit Akun & Hak Akses</h3>
+                  <p className="text-[11px] text-neutral-500 font-mono">
+                    ID: {editModalStaff.id}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditModalStaff(null)}
+                className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg hover:bg-neutral-100 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {editFormError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span>{editFormError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEditStaff} className="space-y-4">
+              {/* Nama Lengkap */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Nama Lengkap & Gelar <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: drh. Anita Wijayanti atau Dimas Pratama"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs focus:outline-none focus:ring-2 focus:ring-fuchsia-700/20"
+                />
+              </div>
+
+              {/* Username Login */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Username Login <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: anita.vet atau admin.dimas"
+                  value={editUsername}
+                  onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-fuchsia-700/20"
+                />
+              </div>
+
+              {/* Password Login */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Kata Sandi Baru <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Masukkan kata sandi baru"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-fuchsia-700/20"
+                />
+                <p className="text-[10px] text-neutral-400 mt-1">
+                  Kata sandi yang digunakan saat masuk portal admin.
+                </p>
+              </div>
+
+              {/* Peran / Hak Akses */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Peran & Tingkatan Hak Akses <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={editRole}
+                  onChange={(e) => {
+                    const selectedRole = e.target.value as StaffRole;
+                    setEditRole(selectedRole);
+                    if (selectedRole === 'Super Admin / Owner') {
+                      setEditAvatar('👑');
+                    } else if (selectedRole === 'Dokter Hewan') {
+                      setEditAvatar('👩‍⚕️');
+                    } else {
+                      setEditAvatar('👨‍💼');
+                    }
+                  }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-fuchsia-700/20 cursor-pointer"
+                >
+                  <option value="Super Admin / Owner">👑 Super Admin / Owner (Akses Penuh & Rekap Omset)</option>
+                  <option value="Staff Admin / Frontdesk">🛡️ Staff Admin / Frontdesk (Operasional Klinik)</option>
+                  <option value="Dokter Hewan">🩺 Dokter Hewan (Pemeriksaan & SOAP)</option>
+                </select>
+              </div>
+
+              {/* Pilihan Avatar */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Pilih Ikon Avatar
+                </label>
+                <div className="grid grid-cols-7 gap-1.5">
+                  {avatarOptions.map((opt) => (
+                    <button
+                      key={opt.emoji}
+                      type="button"
+                      onClick={() => setEditAvatar(opt.emoji)}
+                      title={opt.label}
+                      className={`p-2 rounded-xl text-lg border transition cursor-pointer text-center ${
+                        editAvatar === opt.emoji
+                          ? 'border-fuchsia-500 bg-fuchsia-50 ring-2 ring-fuchsia-700/20'
+                          : 'border-neutral-200 hover:bg-neutral-50'
+                      }`}
+                    >
+                      {opt.emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Tombol Aksi */}
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditModalStaff(null)}
+                  className="px-4 py-2.5 rounded-xl text-neutral-600 hover:bg-neutral-100 text-xs font-bold transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+                >
+                  Simpan Perubahan
                 </button>
               </div>
             </form>

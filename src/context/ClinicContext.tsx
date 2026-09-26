@@ -228,6 +228,7 @@ interface ClinicContextType {
   deleteFeedback: (id: string) => void;
   addStaff: (staff: Omit<StaffUser, 'id'>) => { success: boolean; message: string };
   deleteStaff: (id: string) => { success: boolean; message: string };
+  updateStaff: (id: string, updatedData: Partial<StaffUser>) => { success: boolean; message: string };
   updateStaffPassword: (id: string, newPassword: string) => { success: boolean; message: string };
   loginStaff: (username: string, password: string) => { success: boolean; message: string };
   logoutStaff: () => void;
@@ -599,7 +600,16 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   });
   const [bookings, setBookings] = useState<BookingAppointment[]>(() => loadStored(STORAGE_KEYS.BOOKINGS, INITIAL_BOOKINGS));
   const [feedbacks, setFeedbacks] = useState<CustomerFeedback[]>(() => loadStored(STORAGE_KEYS.FEEDBACKS, INITIAL_FEEDBACKS));
-  const [staffList, setStaffList] = useState<StaffUser[]>(() => loadStored(STORAGE_KEYS.STAFF_LIST, INITIAL_STAFF));
+  const [staffList, setStaffList] = useState<StaffUser[]>(() => {
+    const list = loadStored<StaffUser[]>(STORAGE_KEYS.STAFF_LIST, INITIAL_STAFF);
+    if (!Array.isArray(list) || list.length === 0) return INITIAL_STAFF;
+    const hasOwner = list.some((s) => s.username.toLowerCase() === 'owner' || String(s.role || '').toLowerCase().includes('owner') || String(s.role || '').toLowerCase().includes('super'));
+    if (!hasOwner) {
+      const ownerAccount = INITIAL_STAFF.find((s) => s.username === 'owner') || INITIAL_STAFF[0];
+      return [ownerAccount, ...list];
+    }
+    return list;
+  });
   const [currentUser, setCurrentUser] = useState<StaffUser | null>(() => loadStored(STORAGE_KEYS.STAFF_USER, null));
   const [currentServingTicket, setCurrentServingTicket] = useState<string>(() => loadStored(STORAGE_KEYS.SERVING_TICKET, '-'));
   const [activePatientTicket, setActivePatientTicket] = useState<string | null>(() => loadStored(STORAGE_KEYS.ACTIVE_PATIENT, null));
@@ -1296,7 +1306,18 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const normalizedStaff: StaffUser[] = data.staff
         .map((s, idx) => {
           const username = String(s.username || '').trim().toLowerCase();
-          const role: StaffRole = s.role === 'Dokter Hewan' ? 'Dokter Hewan' : 'Staff Admin / Frontdesk';
+          let role: StaffRole = 'Staff Admin / Frontdesk';
+          if (
+            String(s.role || '').toLowerCase().includes('super') ||
+            String(s.role || '').toLowerCase().includes('owner') ||
+            String(s.role || '').toLowerCase().includes('direktur') ||
+            username === 'owner' ||
+            username === 'superadmin'
+          ) {
+            role = 'Super Admin / Owner';
+          } else if (s.role === 'Dokter Hewan' || username.includes('.vet')) {
+            role = 'Dokter Hewan';
+          }
           const pass =
             s.password !== undefined && s.password !== null && String(s.password).trim() !== ''
               ? String(s.password).trim()
@@ -1307,7 +1328,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             name: String(s.name || s.username || 'Staf Admin').trim(),
             role,
             password: pass,
-            avatar: s.avatar && String(s.avatar).trim() ? String(s.avatar).trim() : (role === 'Dokter Hewan' ? '👩‍⚕️' : '👨‍💼'),
+            avatar: s.avatar && String(s.avatar).trim() ? String(s.avatar).trim() : (role === 'Super Admin / Owner' ? '👑' : role === 'Dokter Hewan' ? '👩‍⚕️' : '👨‍💼'),
           };
         })
         .filter((s) => s.username.length > 0);
@@ -2031,6 +2052,71 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return { success: true, message: `Akun ${target.name} berhasil dihapus.` };
   };
 
+  const updateStaff = (
+    id: string,
+    updatedData: Partial<StaffUser>
+  ): { success: boolean; message: string } => {
+    const target = staffList.find((s) => s.id === id);
+    if (!target) {
+      return { success: false, message: 'Data akun staf tidak ditemukan.' };
+    }
+
+    const payload = { ...updatedData };
+
+    if (payload.name !== undefined) {
+      const cleanName = payload.name.trim();
+      if (!cleanName) {
+        return { success: false, message: 'Nama lengkap tidak boleh kosong.' };
+      }
+      payload.name = cleanName;
+    }
+
+    if (payload.username !== undefined) {
+      const cleanUname = payload.username.trim().toLowerCase();
+      if (!cleanUname) {
+        return { success: false, message: 'Username tidak boleh kosong.' };
+      }
+      if (cleanUname.length < 3) {
+        return { success: false, message: 'Username minimal harus 3 karakter.' };
+      }
+      const duplicate = staffList.find(
+        (s) => s.id !== id && s.username.toLowerCase() === cleanUname
+      );
+      if (duplicate) {
+        return { success: false, message: `Username "${cleanUname}" sudah digunakan akun lain.` };
+      }
+      payload.username = cleanUname;
+    }
+
+    if (payload.password !== undefined) {
+      const trimmedPass = payload.password.trim();
+      if (!trimmedPass) {
+        return { success: false, message: 'Kata sandi tidak boleh kosong.' };
+      }
+      if (trimmedPass.length < 3) {
+        return { success: false, message: 'Kata sandi minimal harus 3 karakter.' };
+      }
+      payload.password = trimmedPass;
+    }
+
+    const updatedStaff: StaffUser = {
+      ...target,
+      ...payload,
+    };
+
+    const nextList = staffList.map((s) => (s.id === id ? updatedStaff : s));
+    setStaffList(nextList);
+
+    if (currentUser?.id === id) {
+      setCurrentUser(updatedStaff);
+    }
+
+    if (spreadsheetConfig.isConnected && spreadsheetConfig.webAppUrl) {
+      pushTableToSpreadsheet(spreadsheetConfig.webAppUrl, 'staff', nextList);
+    }
+    return { success: true, message: `Akun ${updatedStaff.name} berhasil diperbarui.` };
+  };
+
   const updateStaffPassword = (id: string, newPassword: string): { success: boolean; message: string } => {
     const trimmed = newPassword.trim();
     if (!trimmed) {
@@ -2219,6 +2305,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         deleteFeedback,
         addStaff,
         deleteStaff,
+        updateStaff,
         updateStaffPassword,
         loginStaff,
         logoutStaff,

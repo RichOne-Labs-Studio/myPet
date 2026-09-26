@@ -14,11 +14,15 @@ import {
   PieChart,
   Sparkles,
   Calendar,
+  Lock,
+  Shield,
+  Crown,
 } from 'lucide-react';
 import { useClinic } from '../../context/ClinicContext';
 import { AppRoute } from '../../navigation';
 import { VisitQueue } from '../../types';
 import { formatTimeOnly, isToday } from '../../utils/dateUtils';
+import { canViewRevenue } from '../../utils/authUtils';
 import { VisitTrendAnalytics } from '../analytics/VisitTrendAnalytics';
 
 interface Props {
@@ -523,58 +527,73 @@ export const AdminDashboard: React.FC<Props> = ({ navigate, onSelectPatientForSo
             <h3 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-emerald-600" />
               <span>Estimasi Pendapatan Layanan (SOAP)</span>
+              {canViewRevenue(currentUser) ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                  <Crown className="w-3 h-3 text-amber-600" />
+                  Super Admin
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-600 border border-neutral-200">
+                  <Lock className="w-3 h-3 text-neutral-500" />
+                  Akses Terbatas
+                </span>
+              )}
             </h3>
             <p className="text-[11px] text-neutral-500 mt-0.5">
-              Analisis pendapatan berdasarkan tarif service fee pemeriksaan rekam medis.
+              {canViewRevenue(currentUser)
+                ? 'Analisis pendapatan berdasarkan tarif service fee pemeriksaan rekam medis.'
+                : 'Ringkasan jumlah tindakan medis klinik. Rekapitulasi omset dan nilai rupiah hanya dapat dilihat oleh Super Admin / Owner.'}
             </p>
           </div>
 
-          {/* FILTER BULAN DAN TANGGAL */}
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Filter Bulan */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-bold text-neutral-400 uppercase">Bulan:</span>
-              <select
-                value={revenueMonthFilter}
-                onChange={(e) => setRevenueMonthFilter(e.target.value)}
-                className="bg-neutral-50 border border-neutral-300 text-neutral-800 text-xs font-bold rounded-lg px-2 py-1 focus:ring-1 focus:ring-fuchsia-500 cursor-pointer"
-              >
-                <option value="all">Semua Bulan</option>
-                <option value="0">Januari</option>
-                <option value="1">Februari</option>
-                <option value="2">Maret</option>
-                <option value="3">April</option>
-                <option value="4">Mei</option>
-                <option value="5">Juni</option>
-                <option value="6">Juli</option>
-                <option value="7">Agustus</option>
-                <option value="8">September</option>
-                <option value="9">Oktober</option>
-                <option value="10">November</option>
-                <option value="11">Desember</option>
-              </select>
-            </div>
-
-            {/* Filter Tanggal Spesifik */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-bold text-neutral-400 uppercase">Tanggal:</span>
-              <input
-                type="date"
-                value={revenueSpecificDate}
-                onChange={(e) => setRevenueSpecificDate(e.target.value)}
-                className="bg-neutral-50 border border-neutral-300 text-neutral-800 text-xs font-bold rounded-lg px-2 py-0.5 focus:ring-1 focus:ring-fuchsia-500 cursor-pointer font-mono"
-              />
-              {revenueSpecificDate && (
-                <button
-                  type="button"
-                  onClick={() => setRevenueSpecificDate('')}
-                  className="text-[10px] text-rose-600 hover:underline font-bold"
+          {/* FILTER BULAN DAN TANGGAL (Hanya untuk Super Admin) */}
+          {canViewRevenue(currentUser) && (
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Filter Bulan */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold text-neutral-400 uppercase">Bulan:</span>
+                <select
+                  value={revenueMonthFilter}
+                  onChange={(e) => setRevenueMonthFilter(e.target.value)}
+                  className="bg-neutral-50 border border-neutral-300 text-neutral-800 text-xs font-bold rounded-lg px-2 py-1 focus:ring-1 focus:ring-fuchsia-500 cursor-pointer"
                 >
-                  Reset
-                </button>
-              )}
+                  <option value="all">Semua Bulan</option>
+                  <option value="0">Januari</option>
+                  <option value="1">Februari</option>
+                  <option value="2">Maret</option>
+                  <option value="3">April</option>
+                  <option value="4">Mei</option>
+                  <option value="5">Juni</option>
+                  <option value="6">Juli</option>
+                  <option value="7">Agustus</option>
+                  <option value="8">September</option>
+                  <option value="9">Oktober</option>
+                  <option value="10">November</option>
+                  <option value="11">Desember</option>
+                </select>
+              </div>
+
+              {/* Filter Tanggal Spesifik */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold text-neutral-400 uppercase">Tanggal:</span>
+                <input
+                  type="date"
+                  value={revenueSpecificDate}
+                  onChange={(e) => setRevenueSpecificDate(e.target.value)}
+                  className="bg-neutral-50 border border-neutral-300 text-neutral-800 text-xs font-bold rounded-lg px-2 py-0.5 focus:ring-1 focus:ring-fuchsia-500 cursor-pointer font-mono"
+                />
+                {revenueSpecificDate && (
+                  <button
+                    type="button"
+                    onClick={() => setRevenueSpecificDate('')}
+                    className="text-[10px] text-rose-600 hover:underline font-bold"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* REVENUE SUMMARY CARDS */}
@@ -591,17 +610,34 @@ export const AdminDashboard: React.FC<Props> = ({ navigate, onSelectPatientForSo
             </div>
           </div>
 
-          <div className="bg-emerald-50/40 rounded-xl p-4 border border-emerald-100 flex items-center justify-between">
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-emerald-600 font-bold block">Estimasi Pendapatan Layanan</span>
-              <span className="text-xl font-black text-emerald-700 font-mono mt-1 block">
-                Rp {totalRevenueSum.toLocaleString('id-ID')}
-              </span>
+          {canViewRevenue(currentUser) ? (
+            <div className="bg-emerald-50/40 rounded-xl p-4 border border-emerald-100 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-emerald-600 font-bold block">Estimasi Pendapatan Layanan</span>
+                <span className="text-xl font-black text-emerald-700 font-mono mt-1 block">
+                  Rp {totalRevenueSum.toLocaleString('id-ID')}
+                </span>
+              </div>
+              <div className="w-9 h-9 rounded-xl bg-white border border-emerald-200 flex items-center justify-center text-emerald-700">
+                <span className="text-xs font-bold">Rp</span>
+              </div>
             </div>
-            <div className="w-9 h-9 rounded-xl bg-white border border-emerald-200 flex items-center justify-center text-emerald-700">
-              <span className="text-xs font-bold">Rp</span>
+          ) : (
+            <div className="bg-neutral-50 rounded-xl p-4 border border-neutral-200 flex items-center justify-between">
+              <div className="pr-2">
+                <span className="text-[10px] uppercase tracking-wider text-neutral-400 font-bold block">Estimasi Pendapatan Layanan</span>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <Lock className="w-3.5 h-3.5 text-neutral-400" />
+                  <span className="text-xs font-bold text-neutral-500">
+                    Akses Khusus Superadmin / Owner
+                  </span>
+                </div>
+              </div>
+              <div className="w-9 h-9 rounded-xl bg-neutral-100 border border-neutral-200 flex items-center justify-center text-neutral-400">
+                <Lock className="w-4 h-4" />
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

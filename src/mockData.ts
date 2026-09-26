@@ -1,7 +1,23 @@
 import { Owner, Pet, VisitQueue, SoapRecord, InpatientCage, InventoryItem, BookingAppointment, StaffUser, CustomerFeedback } from './types';
 
-// Staf & Dokter terdaftar dari Google Spreadsheet Sheet 8_Staf
+// Staf, Dokter & Superadmin terdaftar di sistem klinik
 export const INITIAL_STAFF: StaffUser[] = [
+  {
+    id: 'staff-owner',
+    username: 'owner',
+    name: 'Owner & Direktur Klinik',
+    role: 'Super Admin / Owner',
+    avatar: '👑',
+    password: 'admin',
+  },
+  {
+    id: 'staff-admin',
+    username: 'admin',
+    name: 'Staff Administrasi & Frontdesk',
+    role: 'Staff Admin / Frontdesk',
+    avatar: '👨‍💼',
+    password: 'admin',
+  },
   {
     id: 'staff-1790051436389',
     username: 'arsi.vet',
@@ -9,14 +25,6 @@ export const INITIAL_STAFF: StaffUser[] = [
     role: 'Dokter Hewan',
     avatar: '👩‍⚕️',
     password: '12345',
-  },
-  {
-    id: 'staff-admin',
-    username: 'admin',
-    name: 'Administrator Klinik',
-    role: 'Staff Admin / Frontdesk',
-    avatar: '🛡️',
-    password: 'admin',
   },
 ];
 
