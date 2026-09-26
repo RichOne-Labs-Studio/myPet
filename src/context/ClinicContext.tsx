@@ -2473,6 +2473,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         spreadsheetConfig,
         syncStatus,
         lastSyncMessage,
+        isLargeDataMode,
         connectSpreadsheet,
         disconnectSpreadsheet,
         updateSpreadsheetConfig,
