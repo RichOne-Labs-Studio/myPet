@@ -1219,5 +1219,6 @@ function deleteRecord(ss, table, id) {
 
 function createJsonResponse(data) {
   return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+    .setMimeType(ContentService.MimeType.JSON); 
 }
+`;
